@@ -1,5 +1,5 @@
-from typing import cast, Any
-from shared.util import notify_confirm, get_batch
+from typing import Any
+from shared.util import notify_confirm
 
 from shared.model import GPT, GPTOption
 from dataclasses import dataclass
@@ -7,7 +7,6 @@ import tomllib
 import os
 
 import torch
-import torch.nn as nn
 
 
 def get_tokenizer_vocab_count(tokenizer_path: str) -> int:

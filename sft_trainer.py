@@ -28,7 +28,8 @@ class SFTExample:
 
 
 class JsonlSFTDataset(Dataset[SFTExample]):
-	def __init__(self, path: str, tokenizer: Any, block_size: int, prompt_key: str, response_key: str, eos: bool = True):
+	def __init__(self, path: str, tokenizer: Any, block_size: int, prompt_key: str,
+			response_key: str, eos: bool = True):
 		self.examples: list[SFTExample] = []
 		self.tokenizer = tokenizer
 		self.block_size = block_size
@@ -65,7 +66,9 @@ class JsonlSFTDataset(Dataset[SFTExample]):
 			ids = ids[:self.block_size + 1]
 			labels = labels[:self.block_size + 1]
 		if all(x == -1 for x in labels[1:]):
-			raise ValueError(f'line {line_no}: response was truncated away; increase block size or shorten prompt')
+			raise ValueError(
+				f'line {line_no}: response was truncated away; increase block size or shorten prompt'
+				)
 
 		return SFTExample(ids, labels)
 

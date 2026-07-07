@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from shared.util import apply_rotary
 # acts: activations
 
-
-
 class KVCache:
+	"""	TODO continuous batching
+	"""
 	def __init__(self):
 		self.k: Tensor | None = None
 		self.v: Tensor | None = None
@@ -31,7 +31,7 @@ class IAttention(Protocol):
 	def __call__(self, x: torch.Tensor, state: DecoderState) -> torch.Tensor: ...
 	
 class Norm0(nn.Module):
-	""" Super Neko Nyan: The trend now is LayerNorm -> RMSNorm """
+	""" The trend now is LayerNorm -> RMSNorm """
 	def __init__(self, chan: int, eps: float, bias: bool = False):
 		super().__init__()
 		self.weight = nn.Parameter(torch.ones(chan))
@@ -54,9 +54,9 @@ class Norm1(nn.Module):
 
 class Attention2(nn.Module):
 	""" Causal Multi-head Self-Attention
-					by Chumbud
 	"""
-	def __init__(self, chan: int, q_head: int, kv_head: int, drop: float, sdpa: bool = True, rope_base: float = 10000.0):
+	def __init__(self, chan: int, q_head: int, kv_head: int, drop: float,
+			sdpa: bool = True, rope_base: float = 10000.0):
 		super().__init__()
 		assert chan % kv_head == 0
 		assert chan % q_head == 0
@@ -310,7 +310,8 @@ class GPT(nn.Module):
 		elif isinstance(module, nn.Embedding):
 			torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 	
-	def optimizer_adamw(self, weight_decay: float, learning_rate: float, betas: tuple[float, float], device_type: str) -> torch.optim.AdamW:
+	def optimizer_adamw(self, weight_decay: float, learning_rate: float,
+			betas: tuple[float, float], device_type: str) -> torch.optim.AdamW:
 		params = {pn: p for pn, p in self.named_parameters()}
 		# filter all parameters which requires gradients
 		params = [p for _, p in  params.items() if p.requires_grad]
@@ -343,7 +344,8 @@ class GPT(nn.Module):
 	
 	# DecoderState(0) is created once, then reused forever.
 	# If any field of state changes (and you do mutate layer_id), every future call shares that same object.
-	def forward(self, input: Tensor, targets: Tensor | None = None, state: DecoderState | None = None) -> tuple[Tensor, Tensor | None]:
+	def forward(self, input: Tensor, targets: Tensor | None = None,
+			state: DecoderState | None = None) -> tuple[Tensor, Tensor | None]:
 		if state is None:
 			state = DecoderState(0)
 		assert not (self.training and state.kv_cache is not None)
