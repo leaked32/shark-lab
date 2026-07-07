@@ -61,27 +61,7 @@ def model_from_scratch(opt: trainer_options) -> GPT:
 		)
 	return GPT(model_args)
 
-def model_from_compatible() -> GPT | None:
-	""" TODO
-		Implement it when it's required, not now yet
-	"""
-	return None
 
-'''
-def cased_model(opt: trainer_options) -> GPT | None:
-	model: GPT | None
-	match opt.train["init_from"]:
-		case 'resume':
-			model = None
-		case 'scratch':
-			model = model_from_scratch(opt)
-		case 'from_compatible':
-			model = None
-		case _:
-			raise Exception("incorrect state for load_model")
-	
-	return model
-'''
 def __optimizer_save_checkpoint(path: str, model: GPT, optimizer: torch.optim.AdamW, step: int) -> None:
 	checkpoint = {
 		'model': model.state_dict(),
@@ -135,23 +115,6 @@ def load_model_checkpoint(model: GPT, ckpt_path: str, device: str = 'cpu') -> in
 	checkpoint = torch.load(ckpt_path, map_location=device)
 	model.load_state_dict(checkpoint['model'], strict=True)
 	return int(checkpoint.get('step', 0))
-
-"""
-@torch.no_grad()
-def estimate_loss(model: GPT, eval_iters = 200):
-    out = {}
-    model.eval()
-    for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
-            X, Y = get_batch(split)
-			# with ctx:
-			logits, loss = model(X, Y)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
-    model.train()
-    return out
-"""
 
 def load_meta_dataset(path: str):
 	with open(path, "rb") as f:
