@@ -28,3 +28,12 @@ scripts/
   corpus/          Corpus generation utilities
   crawlers/        Local/private crawling tools, not intended for public release
 ```
+
+## Notes
+
+
+```bash
+python inference.py --prompt "I'm" --max-new-tokens 100 --temperature 0.8 --top-k 50
+```
+
+

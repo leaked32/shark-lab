@@ -8,11 +8,6 @@ import torch
 from transformers import AutoTokenizer
 
 import shared.format
-from shared.model import GPT
-
-'''
-python inference.py --prompt "I'm" --max-new-tokens 100 --temperature 0.8 --top-k 50
-'''
 
 def set_torch_options(system_opt: dict[str, Any], device_override: str | None, dtype_override: str | None) -> str:
 	dtype_name = dtype_override or system_opt.get('dtype', 'float32')

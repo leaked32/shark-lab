@@ -175,10 +175,11 @@ class Attention2(nn.Module):
 		else:
 			causal_mask = self.get_causal_mask(start_pos, q_len, kv_len, acts.device)
 			is_causal = False
-		# KV-cache issue: q_len != kv_len, needs offset causal mask
-		# GQA issue: q_head != kv_head, needs enable_gqa=True or repeat_interleave
+			
 		if self.sdpa:
 			# no repeat_interleave
+			# KV-cache issue: q_len != kv_len, needs offset causal mask
+			# GQA issue: q_head != kv_head, needs enable_gqa=True or repeat_interleave
 			y = F.scaled_dot_product_attention(
 				q, k, v,
 				attn_mask=causal_mask,

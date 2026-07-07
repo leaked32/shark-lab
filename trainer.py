@@ -1,18 +1,8 @@
-
-# import pickle # This module is considered extremely dangerous since arbitary codes can be executed by it. Please consider using safe versions.
-from typing import cast, Any
-from shared.util import notify_confirm, get_batch
-
-from shared.model import GPT, GPTOption
-from dataclasses import dataclass
-import tomllib
 import os
 
 import torch
-
 import shared.format
-
-# Interface functions, consider build a json scheme for better management across different 
+from shared.util import get_batch
 
 
 def main():

@@ -14,11 +14,9 @@ import shared.format
 
 '''
 Expected data format, JSONL:
-
 {"prompt":"Question...","response":"Answer..."}
 
 Run:
-
 python sft_trainer.py --data data/sft.jsonl --max-steps 1000
 '''
 
