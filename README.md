@@ -2,6 +2,9 @@
 
 `shark-lab` is my personal LLM learning project. It contains experiments for building and training GPT/LLaMA-style language models from scratch.
 
+This repository documents my learning process while building GPT/LLaMA-style language models from scratch. The implementation is experimental and may change as I improve it.
+
+
 The project currently depends on an external tokenizer.
 
 This repository is mainly for learning, experimentation, and engineering practice, so some parts may be incomplete or changing over time.
@@ -25,9 +28,3 @@ scripts/
   corpus/          Corpus generation utilities
   crawlers/        Local/private crawling tools, not intended for public release
 ```
-
-## Notes
-
-And... It's atually my personal learning project. So, I can make mistakes, it's legimate for a beginner, right?
-
-A! Please forgive me if I make mistakes. And, it may look suspiciously similar to nanoGPT, I appreciate it.

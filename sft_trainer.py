@@ -95,7 +95,7 @@ def collate_sft(batch: list[SFTExample], pad_id: int, device: str) -> tuple[torc
 
 def main() -> None:
 	p = argparse.ArgumentParser(description='Response-only supervised fine-tuning for llm-lab GPT.')
-	p.add_argument('--config', default='trainer.toml')
+	p.add_argument('--config', default='options.toml')
 	p.add_argument('--data', required=True, help='JSONL with prompt/response fields')
 	p.add_argument('--prompt-key', default='prompt')
 	p.add_argument('--response-key', default='response')

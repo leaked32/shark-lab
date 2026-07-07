@@ -38,7 +38,7 @@ def decode_tokens(tokenizer: Any, tokens: torch.Tensor) -> str:
 
 def main() -> None:
 	parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint.")
-	parser.add_argument('--config', default='trainer.toml')
+	parser.add_argument('--config', default='options.toml')
 	parser.add_argument('--ckpt', default=None)
 	parser.add_argument('--prompt', default='')
 	parser.add_argument('--max-new-tokens', type=int, default=100)

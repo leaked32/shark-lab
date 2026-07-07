@@ -9,7 +9,6 @@ import tomllib
 import os
 
 import torch
-import torch.nn as nn
 
 import shared.format
 
@@ -17,7 +16,7 @@ import shared.format
 
 
 def main():
-	meta_opt = load_meta_dataset('trainer.toml')
+	meta_opt = shared.format.load_meta_dataset('options.toml')
 	opt_sys = meta_opt['system']
 	
 	torch.set_default_dtype(
@@ -35,7 +34,7 @@ def main():
 	model_path: str = opt.train['working_directory']
 	os.makedirs(model_path, exist_ok=True)
 	
-	model = shared.format.cased_model(opt)
+	model = shared.format.model_from_scratch(opt)
 	if model is None:
 		raise Exception("trainer.cased_model returned None")
 

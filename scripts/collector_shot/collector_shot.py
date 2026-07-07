@@ -51,25 +51,9 @@ def load_meta_dataset(path: str):
 
 @dataclass
 class collector_options:
-	model_url = "http://127.0.0.1:37201/v1/chat/completions"
 	meta_options: dict[str, Any]
 	meta_dataset: dict[str, Any] 
 
-""""
-def get_prompt(case: str) -> tuple[str, tuple[str]]:
-	filter_tuple = lambda x : tuple(t.lower() for t in x)
-	prompts: list[dict[str, str]] = meta_options['prompts']
-	for prompt in prompts:
-		if prompt['case'] == case:
-			return prompt['prompt'], filter_tuple(cast(list[str], prompt['censored_terms']))
-	raise Exception(f'get_prompt cannot find such case: {case}')
-character_name: str = meta_dataset["character"]["name"]
-character_peer: str = meta_dataset["character"]["peer"]
-character_card: str = meta_dataset["character"]["card"]
-character_examples: str = meta_dataset["character"]["examples"]
-
-mode: str = meta_options['config']['mode']
-"""
 def find_element_in_case(x: list, case: str) -> Any:
 	for xx in x:
 		# print(xx)
@@ -78,8 +62,6 @@ def find_element_in_case(x: list, case: str) -> Any:
 	raise Exception(f'find_element_in_case cannot find such case: {case}')
 
 # PROMPT, BANNED_TERMS = get_prompt(mode)
-
-
 
 # =========================
 # LLM CALL
@@ -93,7 +75,7 @@ def call_llm(options: collector_options, prompt):
 		"max_tokens": options.meta_options['config']['max_tokens'],
 	}
 
-	r = requests.post(options.model_url, json=payload, timeout=600)
+	r = requests.post(options.meta_options['config']['model_url'], json=payload, timeout=600)
 	r.raise_for_status()
 	return r.json()["choices"][0]["message"]["content"]
 
@@ -316,9 +298,10 @@ def generate(options: collector_options) -> int:
 
 
 if __name__ == "__main__":
+	# This scirpt works in current working directory by default.
 	
 	options = collector_options(
 		load_meta_dataset("meta_options.toml"),
-		load_meta_dataset("meta_dataset.gura.toml")
+		load_meta_dataset("meta_dataset.toml")
 		)
 	exit(generate(options))
