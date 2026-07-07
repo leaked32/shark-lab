@@ -1,0 +1,80 @@
+
+
+[config]
+temperature = 1.0
+max_tokens = 4096
+mode = 'dialogue'
+epoch = 1
+scenario_index = 0
+output_prefix = 'gura-niche'
+
+[[prompts]]
+case = "dialogue"
+enabled = true
+data = """
+# Character
+{character_card}
+
+# Scenario
+{character_scenario}
+
+# Requirements
+- 7–16 dialogue turns.
+- Stay focused on the scenario.
+- If the scenario finishes early, continue naturally before ending.
+- Write only dialogue.
+- Spoken dialogue must be enclosed in quotation marks.
+- Do not write narration, descriptions, or internal thoughts.
+- Do not write anything outside actions and quotation marks.
+
+# Examples
+{character_examples}
+
+# Goal
+Imitate the format of the examples.
+Generate one natural conversation that fulfills the scenario.
+"""
+
+
+[[prompts]]
+case = "stress"
+enabled = true
+data = """
+
+"""
+
+[[censored_terms]]
+case = 'dialogue'
+enabled = true
+data = [
+  "chatgpt", "openai", "language model",
+  "training data", "assistant", "user",
+  ":", "mommy", "mother",
+  "father", "dad", "brother", "sister",
+  "uncle", "aunt", "my dog", "pet dog",
+  "pet cat", "question continues",
+  "this question continues", "the response maintains",
+  "conversation flow", "parent",
+  "you are sensei", "generate only","anonymous", "'s next reply",
+  "choose one letter",
+  "dialogue options",
+  "story scenario",
+  "additional information",
+  "what does sensei want to see next",
+  "prompt",
+  "hidden prompt",
+  "hidden instruction",
+  "hidden instrtuctions",
+  "policy",
+  "policies",
+  "training",
+  "dataset",
+]
+
+
+[restrictions]
+max_narration_score = 6
+max_actions_density = 0.3
+max_actions_only_messages = 0.5
+
+

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Data
+datasets/
+data/
+draft/
+corpus/
+*.jsonl
+*.parquet
+*.arrow
+
+# Training outputs
+checkpoints/
+outputs/
+runs/
+logs/
+wandb/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Secrets / local config
+secrets/
+*.secret
+*.key
+.env
+local.toml
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
