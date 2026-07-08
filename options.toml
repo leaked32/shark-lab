@@ -6,13 +6,13 @@ chan = 512
 q_head = 8
 kv_head = 4
 mlp_mul = 4
-bias = false # Hmm~ not recommended unless you want to load a compatible model.
+bias = false # Hmm~ not recommended unless you want to load a compatible model, you have to modify `model.py`. *Actually it's not usable so far*
 drop = 0.0 # float. for pretraining 0 is good, for finetuning try 0.1+
 eps = 1e-5
 
 [train]
 init_from = "scratch"
-tokenizer_path = "/home/menv/src/trained_llm/SmolLM2-360M"
+tokenizer_path = "~/src/trained_llm/SmolLM2-360M"
 working_directory = "./model/mtiny_model" # The path directly stores the current model, be aware!
 
 max_steps = 2000
@@ -32,4 +32,4 @@ adamw_beta2 = 0.95
 
 [system]
 device = "cpu"
-dtype = "bfloat16"
+dtype = "bfloat16" # Caution: `float16` may cause problems for optimizer.
