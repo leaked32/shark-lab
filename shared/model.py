@@ -12,17 +12,21 @@ from shared.util import apply_rotary
 # acts: activations
 
 class KVCache:
-	"""	TODO continuous batching
-	"""
-	def __init__(self):
+	def __init__(self, max_batch: int):
 		self.k: Tensor | None = None
 		self.v: Tensor | None = None
+		self.max_batch = max_batch
+		self.lengths = torch.zeros(max_batch, dtype=torch.long)
+		self.active = torch.zeros(max_batch, dtype=torch.bool)
+
+	def clear_slot(self, slot: int):
+		self.lengths[slot] = 0
+		self.active[slot] = False
 
 @dataclass
 class DecoderState:
-	layer_id: int
 	kv_cache: list[KVCache] | None = None
-
+	active_slots: Tensor | None = None
 
 class INorm(Protocol):
 	def __call__(self, x: torch.Tensor) -> torch.Tensor: ...
@@ -55,7 +59,7 @@ class Norm1(nn.Module):
 class Attention2(nn.Module):
 	""" Causal Multi-head Self-Attention
 	"""
-	def __init__(self, chan: int, q_head: int, kv_head: int, drop: float,
+	def __init__(self, chan: int, q_head: int, kv_head: int, drop: float, layer_id: int,
 			sdpa: bool = True, rope_base: float = 10000.0):
 		super().__init__()
 		assert chan % kv_head == 0
@@ -78,6 +82,7 @@ class Attention2(nn.Module):
 		self.drop = drop
 		self.rope_base = rope_base
 		self.sdpa = sdpa
+		self.layer_id = layer_id
 		
 		self.init_rope_cache()
 		self.register_buffer("causal_mask_cache", torch.empty(0, 0, dtype=torch.bool), persistent=False)
@@ -115,71 +120,85 @@ class Attention2(nn.Module):
 		return cos, sin
 	
 	def forward(self, acts: Tensor, state: DecoderState) -> Tensor:
-		""" TODO This is configured for training.
-			For inference use, KV cache is considered necessary
+		"""Forward pass for training, static generation, and slot-based continuous batching.
 		"""
 		sz_batch, sz_seq, sz_embd = acts.size()
 		assert sz_embd == self.chan
-		
+
 		q: Tensor = self.q_proj(acts)
 		k: Tensor = self.k_proj(acts)
 		v: Tensor = self.v_proj(acts)
-		
-		head_dim = self.chan // self.q_head
 
+		head_dim = self.chan // self.q_head
 		q = q.view(sz_batch, sz_seq, self.q_head, head_dim).transpose(1, 2)
 		k = k.view(sz_batch, sz_seq, self.kv_head, head_dim).transpose(1, 2)
 		v = v.view(sz_batch, sz_seq, self.kv_head, head_dim).transpose(1, 2)
-		
-		# print(q.dtype, k.dtype, v.dtype)
-		
-		cache = None if state.kv_cache is None else state.kv_cache[state.layer_id]
-		
-		if cache is not None and cache.k is not None:
-			start_pos = cast(Tensor, cache.k).size(2)
-		else:
-			start_pos = 0
-		
-		cos, sin = self.get_rope_cache(start_pos, sz_seq, acts.device)
-		# print(q.dtype, k.dtype, v.dtype, cos.dtype, sin.dtype)
-		q, k = apply_rotary(q, k, cos, sin)
-		
-		# print(q.dtype, k.dtype, v.dtype)
-		if cache is not None:
-			# print(cache)
-			if cache.k is None or cache.v is None:
-				cache.k = k
-				cache.v = v
-			else:
-				cache.k = torch.cat((cache.k, k), dim=2)
-				cache.v = torch.cat((cache.v, v), dim=2)
 
-			k = cache.k
-			v = cache.v
-		
-		# print(q.dtype, k.dtype, v.dtype)
-		# PyTorch SDPA supports KV-cache style (Q_len != KV_len) causal attention.
-		
+		cache = None if state.kv_cache is None else state.kv_cache[self.layer_id]
+		causal_mask: Tensor | None
+		is_causal: bool
+
+		if cache is None:
+			cos, sin = self.get_rope_cache(0, sz_seq, acts.device)
+			q, k = apply_rotary(q, k, cos, sin)
+			causal_mask = None
+			is_causal = True
+		else:
+			active_slots = state.active_slots
+			if active_slots is None:
+				active_slots = torch.arange(sz_batch, dtype=torch.long, device=acts.device)
+			else:
+				active_slots = active_slots.to(device=acts.device, dtype=torch.long)
+			assert active_slots.numel() == sz_batch
+
+			if cache.lengths.device != acts.device:
+				cache.lengths = cache.lengths.to(acts.device)
+			if cache.active.device != acts.device:
+				cache.active = cache.active.to(acts.device)
+
+			start_pos = cache.lengths.index_select(0, active_slots).clone()
+			for row in range(sz_batch):
+				pos = int(start_pos[row].item())
+				cos, sin = self.get_rope_cache(pos, sz_seq, acts.device)
+				q[row:row + 1], k[row:row + 1] = apply_rotary(q[row:row + 1], k[row:row + 1], cos, sin)
+
+			need = int((start_pos + sz_seq).max().item())
+			old_cap = 0 if cache.k is None else cache.k.size(2)
+			if cache.k is None or cache.v is None:
+				new_cap = max(need, 16)
+				cache.k = k.new_zeros((cache.max_batch, self.kv_head, new_cap, head_dim))
+				cache.v = v.new_zeros((cache.max_batch, self.kv_head, new_cap, head_dim))
+			elif old_cap < need:
+				new_cap = max(need, old_cap * 2)
+				extra = new_cap - old_cap
+				cache.k = torch.cat((cache.k, cache.k.new_zeros((cache.max_batch, self.kv_head, extra, head_dim))), dim=2)
+				cache.v = torch.cat((cache.v, cache.v.new_zeros((cache.max_batch, self.kv_head, extra, head_dim))), dim=2)
+
+			for row, slot_tensor in enumerate(active_slots):
+				slot = int(slot_tensor.item())
+				length = int(start_pos[row].item())
+				cache.k[slot, :, length:length + sz_seq] = k[row]
+				cache.v[slot, :, length:length + sz_seq] = v[row]
+				cache.lengths[slot] = length + sz_seq
+				cache.active[slot] = True
+
+			lengths = cache.lengths.index_select(0, active_slots)
+			kv_len = int(lengths.max().item())
+			k = cache.k.index_select(0, active_slots)[:, :, :kv_len, :]
+			v = cache.v.index_select(0, active_slots)[:, :, :kv_len, :]
+
+			key_pos = torch.arange(kv_len, device=acts.device)
+			query_pos = start_pos[:, None] + torch.arange(sz_seq, device=acts.device)[None, :]
+			valid_keys = key_pos[None, None, None, :] < lengths[:, None, None, None]
+			causal = key_pos[None, None, None, :] <= query_pos[:, None, :, None]
+			causal_mask = valid_keys & causal
+			is_causal = False
+
 		group_size = self.q_head // self.kv_head
 		q_len = q.size(2)
 		kv_len = k.size(2)
-		
-		causal_mask: Tensor | None
-		is_causal: bool
-		if cache is None:
-			causal_mask = None
-			is_causal = True
-		elif q_len == 1:
-			causal_mask = None
-			is_causal = False
-		else:
-			causal_mask = self.get_causal_mask(start_pos, q_len, kv_len, acts.device)
-			is_causal = False
-			
+
 		if self.sdpa:
-			# no repeat_interleave
-			# KV-cache issue: q_len != kv_len, needs offset causal mask
-			# GQA issue: q_head != kv_head, needs enable_gqa=True or repeat_interleave
 			y = F.scaled_dot_product_attention(
 				q, k, v,
 				attn_mask=causal_mask,
@@ -187,12 +206,6 @@ class Attention2(nn.Module):
 				dropout_p=self.drop if self.training else 0.0,
 				enable_gqa=True
 			)
-			"""	Typically, it chooses among:
-				
-				FlashAttention kernel (fastest, when supported)
-				Memory-efficient attention (also fused, but not FlashAttention)
-				Plain math implementation (fallback)
-			"""
 		else:
 			outs = []
 			for kv_idx in range(self.kv_head):
@@ -211,12 +224,11 @@ class Attention2(nn.Module):
 				outs.append(att @ vg)
 
 			y = torch.cat(outs, dim=1)
-		
+
 		y = y.transpose(1, 2).contiguous().view(sz_batch, sz_seq, sz_embd)
 		y = self.o_proj(y)
 		y = self.residual_dropout(y)
 		return y
-
 
 class FeedForward(nn.Module):
 	def __init__(self, chan: int, drop: float, mlp_mul: int):
@@ -277,8 +289,8 @@ class GPT(nn.Module):
 				h=nn.ModuleList(
 					[TransformerBlock(
 						Norm1(opt.chan, opt.eps), Norm1(opt.chan, opt.eps),
-						Attention2(opt.chan, opt.q_head, opt.kv_head, opt.drop), 
-						opt.chan, opt.drop, opt.mlp_mul) for _ in range(opt.layer)]),
+						Attention2(opt.chan, opt.q_head, opt.kv_head, opt.drop, layer_id), 
+						opt.chan, opt.drop, opt.mlp_mul) for layer_id in range(opt.layer)]),
 				ln_f=Norm1(opt.chan, opt.eps)
 			)
 		)
@@ -347,7 +359,7 @@ class GPT(nn.Module):
 	def forward(self, input: Tensor, targets: Tensor | None = None,
 			state: DecoderState | None = None) -> tuple[Tensor, Tensor | None]:
 		if state is None:
-			state = DecoderState(0)
+			state = DecoderState()
 		assert not (self.training and state.kv_cache is not None)
 		
 		# predicts = self(input)
@@ -356,7 +368,7 @@ class GPT(nn.Module):
 		
 		for i in range(len(cast(nn.ModuleList, self.transformer.h))):
 			# or block in cast(nn.ModuleList, self.transformer.h):
-			state.layer_id = i
+			# sstate.layer_id = i
 			x = cast(nn.ModuleList, self.transformer.h)[i](x, state)
 			
 		x = cast(Norm1, self.transformer.ln_f)(x)
@@ -371,33 +383,174 @@ class GPT(nn.Module):
 			loss = None
 		return logits, loss
 		
-	
 	@torch.no_grad
-	def generate(self, idx, max_new_tokens: int, temperature: float=1.0, top_k=None) -> Tensor:
-		state = DecoderState(0, [KVCache() for _ in range(self.opt.layer)])
-		
-		for _ in range(max_new_tokens):
+	def generate(self, idx, max_new_tokens: int, temperature: float=1.0, top_k: int|None=None) -> Tensor:
+		"""Static-batch generation reference implementation."""
+		state = DecoderState(
+			[KVCache(idx.size(0)) for _ in range(self.opt.layer)],
+			torch.arange(idx.size(0), dtype=torch.long, device=idx.device)
+		)
 
-			if state.kv_cache is not None and state.kv_cache[0].k is None:
-				idx_cond = idx          # first pass
-			else:
-				idx_cond = idx[:, -1:]  # only newest token
-			
+		for step in range(max_new_tokens):
+			idx_cond = idx if step == 0 else idx[:, -1:]
 			logits, _ = self(idx_cond, None, state)
-			logits = logits / temperature
-			if top_k is not None:
-				# Sorting the logits is very expensive, instead, we try to find the
-				#   ones with biggest logits. (Partial sort)
-				v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-				# select all the logits below the min(topest top_k) and set them to
-				#   -float("Inf"): $-\infty$
-				logits[logits < v[:, [-1]]] = -float("Inf")
-			probs = F.softmax(logits, dim=-1)
-			# Randomly choose one from the probs table to be the next token.
-			idx_next = torch.multinomial(probs, num_samples=1)
+			idx_next = self.sample_next_token(logits, temperature, top_k)
 			idx = torch.cat((idx, idx_next), dim=1)
 		return idx
-		
+
+	@staticmethod
+	def sample_next_token(logits: Tensor, temperature: float=1.0, top_k: int|None=None) -> Tensor:
+		logits = logits / temperature
+		if top_k is not None:
+			v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+			logits = logits.masked_fill(logits < v[:, [-1]], -float("inf"))
+		probs = F.softmax(logits, dim=-1)
+		return torch.multinomial(probs, num_samples=1)
 
 
+@dataclass
+class GenerateRequest:
+	id: int
+	input_ids: Tensor
+	max_new_tokens: int
+	slot: int = -1
+	prompt_len: int = 0
+	generated_tokens: int = 0
+	prefilled: bool = False
+	finished: bool = False
+
+@dataclass
+class GenerationContext:
+	requests: list[GenerateRequest]
+	state: DecoderState
+
+@dataclass
+class BatchSlot:
+	request: GenerateRequest | None = None
+
+
+class SlotManager:
+	def __init__(self, size):
+		self.slots = [BatchSlot() for _ in range(size)]
+
+	def allocate(self, req):
+		for i, slot in enumerate(self.slots):
+			if slot.request is None:
+				slot.request = req
+				req.slot = i
+				return i
+
+		raise RuntimeError("no free slot")
+
+	def release(self, idx):
+		self.slots[idx].request = None
+
+	def active(self):
+		return [
+			(i, slot.request)
+			for i, slot in enumerate(self.slots)
+			if slot.request is not None
+		]
+
+
+class GenerationEngine:
+	def __init__(self, model: GPT, max_batch: int, temperature: float=1.0, top_k=None):
+		self.model = model
+		self.next_id = 0
+		self.temperature = temperature
+		self.top_k = top_k
+		self.requests: dict[int, GenerateRequest] = {}
+		self.slots = SlotManager(max_batch)
+		self.state = DecoderState([KVCache(max_batch) for _ in range(model.opt.layer)])
+
+	def add(self, input_ids: Tensor, max_new_tokens: int):
+		device = next(self.model.parameters()).device
+		input_ids = input_ids.to(device)
+		assert input_ids.dim() == 2 and input_ids.size(0) == 1
+		req = GenerateRequest(
+			id=self.next_id,
+			input_ids=input_ids,
+			max_new_tokens=max_new_tokens,
+			prompt_len=input_ids.size(1)
+		)
+		self.next_id += 1
+		self.slots.allocate(req)
+		self.requests[req.id] = req
+		return req
+
+	def has_active(self):
+		return any(not req.finished for req in self.requests.values())
+
+	def active_requests(self):
+		return [req for _, req in self.slots.active() if not req.finished]
+
+	def make_decode_batch(self, exclude: set[int] | None=None):
+		device = next(self.model.parameters()).device
+		exclude = set() if exclude is None else exclude
+		active = [
+			req for _, req in self.slots.active()
+			if req.prefilled and not req.finished and req.id not in exclude
+		]
+		if not active:
+			return None, [], torch.empty(0, dtype=torch.long, device=device)
+		inputs = torch.cat([req.input_ids[:, -1:] for req in active], dim=0).to(device)
+		active_slots = torch.tensor([req.slot for req in active], dtype=torch.long, device=device)
+		return inputs, active, active_slots
+
+	def reset_slot_cache(self, slot: int):
+		if self.state.kv_cache is None:
+			return
+		for cache in self.state.kv_cache:
+			cache.clear_slot(slot)
+
+	def finish(self, req: GenerateRequest):
+		req.finished = True
+		slot = req.slot
+		self.reset_slot_cache(slot)
+		self.slots.release(slot)
+		req.slot = -1
+
+	@torch.no_grad
+	def prefill(self, req: GenerateRequest):
+		device = next(self.model.parameters()).device
+		self.state.active_slots = torch.tensor([req.slot], dtype=torch.long, device=device)
+		logits, _ = self.model(req.input_ids.to(device), state=self.state)
+		token = self.model.sample_next_token(logits, self.temperature, self.top_k)
+		req.input_ids = torch.cat((req.input_ids, token.view(1, 1)), dim=1)
+		req.generated_tokens += 1
+		req.prefilled = True
+		if req.generated_tokens >= req.max_new_tokens:
+			self.finish(req)
+
+	@torch.no_grad
+	def decode(self, active: list[GenerateRequest], active_slots: Tensor):
+		inputs = torch.cat([req.input_ids[:, -1:] for req in active], dim=0)
+		self.state.active_slots = active_slots
+		logits, _ = self.model(inputs, state=self.state)
+		next_tokens = self.model.sample_next_token(logits, self.temperature, self.top_k)
+		for row, req in enumerate(active):
+			token = next_tokens[row]
+			req.input_ids = torch.cat((req.input_ids, token.view(1, 1)), dim=1)
+			req.generated_tokens += 1
+			if req.generated_tokens >= req.max_new_tokens:
+				self.finish(req)
+
+	@torch.no_grad
+	def step(self):
+		just_prefilled: set[int] = set()
+		for req in list(self.active_requests()):
+			if not req.prefilled:
+				self.prefill(req)
+				just_prefilled.add(req.id)
+
+		inputs, active, active_slots = self.make_decode_batch(exclude=just_prefilled)
+		if not active:
+			return
+		self.decode(active, active_slots)
+
+	@torch.no_grad
+	def run_until_done(self):
+		while self.has_active():
+			self.step()
+		return self.requests
 
