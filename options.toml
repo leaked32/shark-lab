@@ -1,26 +1,26 @@
 [model]
-# A! `vocab` should be roughly the same as the tokenizer used by trainer.py, if you are unsure about it, please leave it `0` and the trainer.py will use the same from tokenizer. Yay! focus on configuring the tokenizer instead.
+# A! `vocab` should be roughly the same as the tokenizer used by trainer.py, if you are unsure about it, please leave it `0` and the trainer.py will use the same from tokenizer. focus on configuring the tokenizer instead.
 vocab = 0
 layer = 8
 chan = 512
 q_head = 8
 kv_head = 4
 mlp_mul = 4
-bias = false # Hmm~ not recommended unless you want to load a compatible model, you have to modify `model.py`. *Actually it's not usable so far*
+bias = false # Hmm~ not recommended unless you want to load a compatible model, you have to modify `model.py`. *Actually it's ignored so far*
 drop = 0.0 # float. for pretraining 0 is good, for finetuning try 0.1+
 eps = 1e-5
 
 [train]
 init_from = "scratch"
-tokenizer_path = "~/src/trained_llm/SmolLM2-360M"
-working_directory = "./model/mtiny_model" # The path directly stores the current model, be aware!
+tokenizer_path = "XXX" # repo id from Hugging face or path to the model model directory where contains special_tokens_map.json, tokenizer.json, tokenizer_config.json
+working_directory = "./model/mtiny_model" # The path **directly** stores the current model, be aware!
 
 max_steps = 2000
 log_interval = 1
 save_interval = 20
 
-dataset_train = "corpus/cus0/train.bin"
-dataset_validation = "corpus/cus0/val.bin"
+dataset_train = "../corpus/cus0/train.bin"
+dataset_validation = "../corpus/cus0/val.bin"
 corpus_block_size = 64
 corpus_batch_size = 4
 

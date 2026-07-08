@@ -1,12 +1,18 @@
 import os
 
+import argparse
 import torch
 import shared.format
 from shared.util import get_batch
 
 
 def main():
-	meta_opt = shared.format.load_meta_dataset('options.toml')
+	parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint.")
+	parser.add_argument('--config', default='options.toml')
+	args = parser.parse_args()
+	
+	
+	meta_opt = shared.format.load_meta_dataset(args.config)
 	opt_sys = meta_opt['system']
 	
 	torch.set_default_dtype(

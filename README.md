@@ -31,9 +31,11 @@ scripts/
 
 ## Notes
 
-
+Examples
 ```bash
-python inference.py --prompt "I'm" --max-new-tokens 100 --temperature 0.8 --top-k 50
+python inference.py --config ../shark-gen/options.toml --max-new-tokens 100 --temperature 0.8 --top-k 50
+
+python trainer.py --config ../shark-gen/options.toml
 ```
 
 

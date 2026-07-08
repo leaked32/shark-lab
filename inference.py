@@ -35,7 +35,7 @@ def main() -> None:
 	parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint.")
 	parser.add_argument('--config', default='options.toml')
 	parser.add_argument('--ckpt', default=None)
-	parser.add_argument('--prompt', default='')
+	# parser.add_argument('--prompt', default='')
 	parser.add_argument('--max-new-tokens', type=int, default=100)
 	parser.add_argument('--temperature', type=float, default=1.0)
 	parser.add_argument('--top-k', type=int, default=None)
@@ -58,13 +58,15 @@ def main() -> None:
 	ckpt_path = args.ckpt or os.path.join(meta_opt['train']['working_directory'], 'ckpt.pt')
 	step = shared.format.load_model_checkpoint(model, ckpt_path, device)
 	model.eval()
-
-	idx = encode_prompt(tokenizer, args.prompt, device)
-	with torch.no_grad():
-		out = model.generate(idx, args.max_new_tokens, temperature=args.temperature, top_k=args.top_k)
-
 	print(f"loaded checkpoint step {step}")
-	print(decode_tokens(tokenizer, out))
+
+	while True:
+		prompt: str = input('prompt: ')
+		idx = encode_prompt(tokenizer, prompt, device)
+		with torch.no_grad():
+			out = model.generate(idx, args.max_new_tokens, temperature=args.temperature, top_k=args.top_k)
+
+		print(decode_tokens(tokenizer, out))
 
 if __name__ == '__main__':
 	main()
