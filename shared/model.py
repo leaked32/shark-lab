@@ -8,8 +8,23 @@ import torch.nn.functional as F
 
 from torch import Tensor
 from dataclasses import dataclass
-from shared.util import apply_rotary
 # acts: activations
+
+@dataclass
+class GPTOption:
+	"""	Notice
+		This dataclass should not be changed once the model begins
+	"""
+	vocab: int
+	layer: int
+	chan: int
+	q_head: int
+	mlp_mul: int
+	drop: float
+	eps: float
+	kv_head: int # deprecated for GQA is not well-implemented yet.
+	# bias: bool = False # not supported yet
+	rope_base: float = 10000.0 # not supported yet
 
 class KVCache:
 	def __init__(self, max_batch: int):
@@ -55,38 +70,85 @@ class Norm1(nn.Module):
 	def forward(self, acts: Tensor) -> Tensor:
 		return F.rms_norm(acts, self.weight.shape, self.weight, self.eps)
 
+class RoPE(nn.Module):
+	"""
+	Meta's implementation and Hugging Face's implementation both keep the RoPE cache generation in float32, then cast to the model dtype when using it.
+	That gives stable phases while keeping attention fast.
+	inv_freq: float32
+	pos: float32
+	freqs: float32
+	cos/sin: float32
+	before apply_rotary: cos = cos.to(q.dtype) and sin = sin.to(q.dtype)
+	"""
+	
+	@staticmethod
+	def rotate_half(x):
+		x1 = x[..., : x.shape[-1] // 2]
+		x2 = x[..., x.shape[-1] // 2 :]
+		return torch.cat((-x2, x1), dim=-1)
+	
+	@staticmethod
+	def apply_rotary(q, k, cos, sin):
+		cos = cos.to(dtype=q.dtype, device=q.device)
+		sin = sin.to(dtype=q.dtype, device=q.device)
+		q = q * cos + RoPE.rotate_half(q) * sin
+		k = k * cos + RoPE.rotate_half(k) * sin
+		return q, k
+	
+	def __init__(self, head_dim: int, rope_base: float):
+		assert head_dim % 2 == 0
+		
+		super().__init__()
+		
+		# def init_rope_cache(self) -> None:
+		#	head_dim = self.chan // self.q_head
+		inv_freq = 1.0 / (rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
+		self.register_buffer("inv_freq", inv_freq, persistent=False)
+	
+	def get_rope_cache(self, start_pos: int, seq_len: int, device):
+		# Explicit: pos = torch.arange(start_pos, start_pos + seq_len, device=device).float()
+		inv_freq: Tensor = self.get_buffer("inv_freq").to(device=device)
+		pos = torch.arange(start_pos, start_pos + seq_len, dtype=inv_freq.dtype, device=device)
+		freqs = torch.outer(pos, inv_freq)
+		emb = torch.cat((freqs, freqs), dim=-1)
+
+		cos = emb.cos()[None, None, :, :]
+		sin = emb.sin()[None, None, :, :]
+
+		return cos, sin
 
 class Attention2(nn.Module):
 	""" Causal Multi-head Self-Attention
 	"""
-	def __init__(self, chan: int, q_head: int, kv_head: int, drop: float, layer_id: int,
-			sdpa: bool = True, rope_base: float = 10000.0):
+	def __init__(self, opt: GPTOption, layer_id: int, sdpa: bool=True):
 		super().__init__()
-		assert chan % kv_head == 0
-		assert chan % q_head == 0
-		assert q_head % kv_head == 0
-		assert (chan // q_head) % 2 == 0 # RoPE requires even head_dim
+		assert opt.chan % opt.kv_head == 0
+		assert opt.chan % opt.q_head == 0
+		assert opt.q_head % opt.kv_head == 0
+		assert (opt.chan // opt.q_head) % 2 == 0 # RoPE requires even head_dim
 		
-		self.q_proj = nn.Linear(chan, chan, False)
-		self.k_proj = nn.Linear(chan, (chan // (q_head // kv_head)), False)
-		self.v_proj = nn.Linear(chan, (chan // (q_head // kv_head)), False)
-		self.o_proj = nn.Linear(chan, chan, False)
-		
-		# Deprecated, never used since F.scaled_dot_product_attention
-		self.attn_dropout = nn.Dropout(drop) # Compatibility
-		self.residual_dropout = nn.Dropout(drop)
-		
-		self.chan = chan
-		self.kv_head = kv_head
-		self.q_head = q_head
-		self.drop = drop
-		self.rope_base = rope_base
+		self.chan = opt.chan
+		self.kv_head = opt.kv_head
+		self.q_head = opt.q_head
+		self.drop = opt.drop
+		self.rope_base = opt.rope_base
 		self.sdpa = sdpa
 		self.layer_id = layer_id
 		
-		self.init_rope_cache()
-		self.register_buffer("causal_mask_cache", torch.empty(0, 0, dtype=torch.bool), persistent=False)
+		self.q_proj = nn.Linear(self.chan, self.chan, False)
+		self.k_proj = nn.Linear(self.chan, (self.chan // (self.q_head // self.kv_head)), False)
+		self.v_proj = nn.Linear(self.chan, (self.chan // (self.q_head // self.kv_head)), False)
+		self.o_proj = nn.Linear(self.chan, self.chan, False)
 		
+		# Deprecated, never used since F.scaled_dot_product_attention
+		self.attn_dropout = nn.Dropout(self.drop) # Compatibility
+		self.residual_dropout = nn.Dropout(self.drop)
+		
+		
+		self.rope = RoPE(self.chan // self.q_head, self.rope_base)
+		self.register_buffer("causal_mask_cache", torch.empty(0, 0, dtype=torch.bool), persistent=False)
+	
+	
 	def get_causal_mask(self, start_pos: int, q_len: int, kv_len: int, device) -> Tensor:
 		need = max(start_pos + q_len, kv_len)
 		old = self.causal_mask_cache.size(0)
@@ -99,25 +161,6 @@ class Attention2(nn.Module):
 
 		return self.causal_mask_cache[start_pos:start_pos + q_len, :kv_len].view(1, 1, q_len, kv_len)
 		
-	def init_rope_cache(self):
-		head_dim = self.chan // self.q_head
-		inv_freq = 1.0 / (
-			# Explicit: self.rope_base ** (torch.arange(0, head_dim, 2).float() / head_dim)
-			self.rope_base ** (torch.arange(0, head_dim, 2) / head_dim)
-		)
-		self.register_buffer("inv_freq", inv_freq)
-		
-	
-	def get_rope_cache(self, start_pos: int, seq_len: int, device):
-		# Explicit: pos = torch.arange(start_pos, start_pos + seq_len, device=device).float()
-		pos = torch.arange(start_pos, start_pos + seq_len, device=device)
-		freqs = torch.outer(pos, self.get_buffer("inv_freq"))
-		emb = torch.cat((freqs, freqs), dim=-1)
-
-		cos = emb.cos()[None, None, :, :]
-		sin = emb.sin()[None, None, :, :]
-
-		return cos, sin
 	
 	def forward(self, acts: Tensor, state: DecoderState) -> Tensor:
 		"""Forward pass for training, static generation, and slot-based continuous batching.
@@ -139,8 +182,9 @@ class Attention2(nn.Module):
 		is_causal: bool
 
 		if cache is None:
-			cos, sin = self.get_rope_cache(0, sz_seq, acts.device)
-			q, k = apply_rotary(q, k, cos, sin)
+			# No KV Cache; Training
+			cos, sin = self.rope.get_rope_cache(0, sz_seq, acts.device)
+			q, k = RoPE.apply_rotary(q, k, cos, sin)
 			causal_mask = None
 			is_causal = True
 		else:
@@ -159,8 +203,8 @@ class Attention2(nn.Module):
 			start_pos = cache.lengths.index_select(0, active_slots).clone()
 			for row in range(sz_batch):
 				pos = int(start_pos[row].item())
-				cos, sin = self.get_rope_cache(pos, sz_seq, acts.device)
-				q[row:row + 1], k[row:row + 1] = apply_rotary(q[row:row + 1], k[row:row + 1], cos, sin)
+				cos, sin = self.rope.get_rope_cache(pos, sz_seq, acts.device)
+				q[row:row + 1], k[row:row + 1] = RoPE.apply_rotary(q[row:row + 1], k[row:row + 1], cos, sin)
 
 			need = int((start_pos + sz_seq).max().item())
 			old_cap = 0 if cache.k is None else cache.k.size(2)
@@ -199,6 +243,8 @@ class Attention2(nn.Module):
 		kv_len = k.size(2)
 
 		if self.sdpa:
+			# KV Cache issue: q_len != kv_len, needs offset causal mask
+			# GQA issue: q_head != kv_head, needs `enable_gqa=True` or `repeat_interleave`
 			y = F.scaled_dot_product_attention(
 				q, k, v,
 				attn_mask=causal_mask,
@@ -206,6 +252,12 @@ class Attention2(nn.Module):
 				dropout_p=self.drop if self.training else 0.0,
 				enable_gqa=True
 			)
+			"""	Typically, it chooses among:
+				
+				FlashAttention kernel (fastest, when supported)
+				Memory-efficient attention (also fused, but not FlashAttention)
+				Plain math implementation (fallback)
+			"""
 		else:
 			outs = []
 			for kv_idx in range(self.kv_head):
@@ -261,19 +313,6 @@ class TransformerBlock(nn.Module):
 		acts = acts + self.mlp(self.ln_2(acts), state)
 		return acts
 
-@dataclass
-class GPTOption:
-	vocab: int
-	layer: int
-	chan: int
-	q_head: int
-	mlp_mul: int
-	drop: float
-	eps: float
-	kv_head: int # deprecated for GQA is not well-implemented yet.
-	# bias: bool = False # not supported yet
-	# rope_base: float = 10000.0 # not supported yet
-
 class GPT(nn.Module):
 	def __init__(self, opt: GPTOption):
 		super().__init__()
@@ -289,7 +328,7 @@ class GPT(nn.Module):
 				h=nn.ModuleList(
 					[TransformerBlock(
 						Norm1(opt.chan, opt.eps), Norm1(opt.chan, opt.eps),
-						Attention2(opt.chan, opt.q_head, opt.kv_head, opt.drop, layer_id), 
+						Attention2(opt, layer_id), 
 						opt.chan, opt.drop, opt.mlp_mul) for layer_id in range(opt.layer)]),
 				ln_f=Norm1(opt.chan, opt.eps)
 			)
@@ -407,150 +446,4 @@ class GPT(nn.Module):
 		probs = F.softmax(logits, dim=-1)
 		return torch.multinomial(probs, num_samples=1)
 
-
-@dataclass
-class GenerateRequest:
-	id: int
-	input_ids: Tensor
-	max_new_tokens: int
-	slot: int = -1
-	prompt_len: int = 0
-	generated_tokens: int = 0
-	prefilled: bool = False
-	finished: bool = False
-
-@dataclass
-class GenerationContext:
-	requests: list[GenerateRequest]
-	state: DecoderState
-
-@dataclass
-class BatchSlot:
-	request: GenerateRequest | None = None
-
-
-class SlotManager:
-	def __init__(self, size):
-		self.slots = [BatchSlot() for _ in range(size)]
-
-	def allocate(self, req):
-		for i, slot in enumerate(self.slots):
-			if slot.request is None:
-				slot.request = req
-				req.slot = i
-				return i
-
-		raise RuntimeError("no free slot")
-
-	def release(self, idx):
-		self.slots[idx].request = None
-
-	def active(self):
-		return [
-			(i, slot.request)
-			for i, slot in enumerate(self.slots)
-			if slot.request is not None
-		]
-
-
-class GenerationEngine:
-	def __init__(self, model: GPT, max_batch: int, temperature: float=1.0, top_k=None):
-		self.model = model
-		self.next_id = 0
-		self.temperature = temperature
-		self.top_k = top_k
-		self.requests: dict[int, GenerateRequest] = {}
-		self.slots = SlotManager(max_batch)
-		self.state = DecoderState([KVCache(max_batch) for _ in range(model.opt.layer)])
-
-	def add(self, input_ids: Tensor, max_new_tokens: int):
-		device = next(self.model.parameters()).device
-		input_ids = input_ids.to(device)
-		assert input_ids.dim() == 2 and input_ids.size(0) == 1
-		req = GenerateRequest(
-			id=self.next_id,
-			input_ids=input_ids,
-			max_new_tokens=max_new_tokens,
-			prompt_len=input_ids.size(1)
-		)
-		self.next_id += 1
-		self.slots.allocate(req)
-		self.requests[req.id] = req
-		return req
-
-	def has_active(self):
-		return any(not req.finished for req in self.requests.values())
-
-	def active_requests(self):
-		return [req for _, req in self.slots.active() if not req.finished]
-
-	def make_decode_batch(self, exclude: set[int] | None=None):
-		device = next(self.model.parameters()).device
-		exclude = set() if exclude is None else exclude
-		active = [
-			req for _, req in self.slots.active()
-			if req.prefilled and not req.finished and req.id not in exclude
-		]
-		if not active:
-			return None, [], torch.empty(0, dtype=torch.long, device=device)
-		inputs = torch.cat([req.input_ids[:, -1:] for req in active], dim=0).to(device)
-		active_slots = torch.tensor([req.slot for req in active], dtype=torch.long, device=device)
-		return inputs, active, active_slots
-
-	def reset_slot_cache(self, slot: int):
-		if self.state.kv_cache is None:
-			return
-		for cache in self.state.kv_cache:
-			cache.clear_slot(slot)
-
-	def finish(self, req: GenerateRequest):
-		req.finished = True
-		slot = req.slot
-		self.reset_slot_cache(slot)
-		self.slots.release(slot)
-		req.slot = -1
-
-	@torch.no_grad
-	def prefill(self, req: GenerateRequest):
-		device = next(self.model.parameters()).device
-		self.state.active_slots = torch.tensor([req.slot], dtype=torch.long, device=device)
-		logits, _ = self.model(req.input_ids.to(device), state=self.state)
-		token = self.model.sample_next_token(logits, self.temperature, self.top_k)
-		req.input_ids = torch.cat((req.input_ids, token.view(1, 1)), dim=1)
-		req.generated_tokens += 1
-		req.prefilled = True
-		if req.generated_tokens >= req.max_new_tokens:
-			self.finish(req)
-
-	@torch.no_grad
-	def decode(self, active: list[GenerateRequest], active_slots: Tensor):
-		inputs = torch.cat([req.input_ids[:, -1:] for req in active], dim=0)
-		self.state.active_slots = active_slots
-		logits, _ = self.model(inputs, state=self.state)
-		next_tokens = self.model.sample_next_token(logits, self.temperature, self.top_k)
-		for row, req in enumerate(active):
-			token = next_tokens[row]
-			req.input_ids = torch.cat((req.input_ids, token.view(1, 1)), dim=1)
-			req.generated_tokens += 1
-			if req.generated_tokens >= req.max_new_tokens:
-				self.finish(req)
-
-	@torch.no_grad
-	def step(self):
-		just_prefilled: set[int] = set()
-		for req in list(self.active_requests()):
-			if not req.prefilled:
-				self.prefill(req)
-				just_prefilled.add(req.id)
-
-		inputs, active, active_slots = self.make_decode_batch(exclude=just_prefilled)
-		if not active:
-			return
-		self.decode(active, active_slots)
-
-	@torch.no_grad
-	def run_until_done(self):
-		while self.has_active():
-			self.step()
-		return self.requests
 

@@ -2,18 +2,6 @@ import torch
 import numpy as np
 from torch import Tensor as Tensor
 
-
-
-def rotate_half(x):
-	x1 = x[..., : x.shape[-1] // 2]
-	x2 = x[..., x.shape[-1] // 2 :]
-	return torch.cat((-x2, x1), dim=-1)
-
-def apply_rotary(q, k, cos, sin):
-	q = q * cos + rotate_half(q) * sin
-	k = k * cos + rotate_half(k) * sin
-	return q, k
-
 def notify_confirm(msg: str):
 	print(msg)
 	x = input('Do you wish to continue? Y/ Yes or No: ').lower()
