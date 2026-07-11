@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 @dataclass
 class GPTOption:
-	"""	Notice
-		This dataclass should not be changed once the model begins
+	"""	NOTICE
+		This dataclass should not be changed once the model
 	"""
 	vocab: int
 	layer: int
@@ -22,9 +22,9 @@ class GPTOption:
 	mlp_mul: int
 	drop: float
 	eps: float
-	kv_head: int # deprecated for GQA is not well-implemented yet.
+	kv_head: int
+	rope_base: float = 10000.0
 	# bias: bool = False # not supported yet
-	rope_base: float = 10000.0 # not supported yet
 
 class KVCache:
 	def __init__(self, max_batch: int):
@@ -32,16 +32,27 @@ class KVCache:
 		self.v: Tensor | None = None
 		self.max_batch = max_batch
 		self.lengths = torch.zeros(max_batch, dtype=torch.long)
-		self.active = torch.zeros(max_batch, dtype=torch.bool)
-
+		""" slot-based KV cache preallocates a larger tensor than the actual sequences currently need.
+			this Tensor is used to determine what current writing position is.
+			That said, in KV Cache, this represents the positions of true position of K and V.
+			RoPE requires the current positions
+			Right now every layer has its own lengths tensor,
+			but the sequence length of a request is identical across all transformer layers.
+		"""
+		# self.active = torch.zeros(max_batch, dtype=torch.bool)
+	
 	def clear_slot(self, slot: int):
 		self.lengths[slot] = 0
-		self.active[slot] = False
+		# self.active[slot] = False
 
 @dataclass
 class DecoderState:
 	kv_cache: list[KVCache] | None = None
 	active_slots: Tensor | None = None
+	"""	The mappings
+		For example, `active_slots: tensor([1, 0])` means
+		`row 0 -> slot 1` and `row 1 -> slot 0`
+	"""
 
 class INorm(Protocol):
 	def __call__(self, x: torch.Tensor) -> torch.Tensor: ...
@@ -72,23 +83,26 @@ class Norm1(nn.Module):
 
 class RoPE(nn.Module):
 	"""
-	Meta's implementation and Hugging Face's implementation both keep the RoPE cache generation in float32, then cast to the model dtype when using it.
+	Meta's implementation and Hugging Face's implementation both keep
+	the RoPE cache generation in float32, then cast to the model dtype when using it.
 	That gives stable phases while keeping attention fast.
-	inv_freq: float32
-	pos: float32
-	freqs: float32
-	cos/sin: float32
+	`inv_freq: float32`
+	`pos: float32`
+	`freqs: float32`
+	`cos/sin: float32`
 	before apply_rotary: cos = cos.to(q.dtype) and sin = sin.to(q.dtype)
 	"""
 	
 	@staticmethod
-	def rotate_half(x):
+	def rotate_half(x: Tensor):
 		x1 = x[..., : x.shape[-1] // 2]
 		x2 = x[..., x.shape[-1] // 2 :]
 		return torch.cat((-x2, x1), dim=-1)
 	
 	@staticmethod
-	def apply_rotary(q, k, cos, sin):
+	def apply_rotary(q: Tensor, k: Tensor, cos: Tensor, sin: Tensor) -> tuple[Tensor, Tensor]:
+		"""	In this implementation, q has nothing to do with k if dtype and device are the same.
+		"""
 		cos = cos.to(dtype=q.dtype, device=q.device)
 		sin = sin.to(dtype=q.dtype, device=q.device)
 		q = q * cos + RoPE.rotate_half(q) * sin
@@ -102,7 +116,10 @@ class RoPE(nn.Module):
 		
 		# def init_rope_cache(self) -> None:
 		#	head_dim = self.chan // self.q_head
-		inv_freq = 1.0 / (rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
+		inv_freq = (
+			1.0 /
+			(rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
+		)
 		self.register_buffer("inv_freq", inv_freq, persistent=False)
 	
 	def get_rope_cache(self, start_pos: int, seq_len: int, device):
@@ -114,8 +131,8 @@ class RoPE(nn.Module):
 
 		cos = emb.cos()[None, None, :, :]
 		sin = emb.sin()[None, None, :, :]
-
 		return cos, sin
+
 
 class Attention2(nn.Module):
 	""" Causal Multi-head Self-Attention
@@ -144,15 +161,14 @@ class Attention2(nn.Module):
 		self.attn_dropout = nn.Dropout(self.drop) # Compatibility
 		self.residual_dropout = nn.Dropout(self.drop)
 		
-		
 		self.rope = RoPE(self.chan // self.q_head, self.rope_base)
-		self.register_buffer("causal_mask_cache", torch.empty(0, 0, dtype=torch.bool), persistent=False)
-	
+		self.register_buffer("causal_mask_cache",
+			torch.empty(0, 0, dtype=torch.bool), persistent=False)
 	
 	def get_causal_mask(self, start_pos: int, q_len: int, kv_len: int, device) -> Tensor:
 		need = max(start_pos + q_len, kv_len)
 		old = self.causal_mask_cache.size(0)
-
+		
 		if self.causal_mask_cache.device != device or old < need:
 			new_size = max(need, old * 2 if old > 0 else 16)
 			pos_q = torch.arange(new_size, device=device)[:, None]
@@ -160,7 +176,6 @@ class Attention2(nn.Module):
 			self.causal_mask_cache = pos_k <= pos_q
 
 		return self.causal_mask_cache[start_pos:start_pos + q_len, :kv_len].view(1, 1, q_len, kv_len)
-		
 	
 	def forward(self, acts: Tensor, state: DecoderState) -> Tensor:
 		"""Forward pass for training, static generation, and slot-based continuous batching.
@@ -171,16 +186,16 @@ class Attention2(nn.Module):
 		q: Tensor = self.q_proj(acts)
 		k: Tensor = self.k_proj(acts)
 		v: Tensor = self.v_proj(acts)
-
-		head_dim = self.chan // self.q_head
+		
+		head_dim: int = self.chan // self.q_head
 		q = q.view(sz_batch, sz_seq, self.q_head, head_dim).transpose(1, 2)
 		k = k.view(sz_batch, sz_seq, self.kv_head, head_dim).transpose(1, 2)
 		v = v.view(sz_batch, sz_seq, self.kv_head, head_dim).transpose(1, 2)
-
+		
 		cache = None if state.kv_cache is None else state.kv_cache[self.layer_id]
 		causal_mask: Tensor | None
 		is_causal: bool
-
+		
 		if cache is None:
 			# No KV Cache; Training
 			cos, sin = self.rope.get_rope_cache(0, sz_seq, acts.device)
@@ -190,65 +205,78 @@ class Attention2(nn.Module):
 		else:
 			active_slots = state.active_slots
 			if active_slots is None:
+				# I should consider replacing this line by assertion since to force the user pass the correct initial active_slots. Instead of embedding it in the `forward` in attention.
+				# But no, if forward is called without it, like simple generate function, the program will be falsely asserted.
 				active_slots = torch.arange(sz_batch, dtype=torch.long, device=acts.device)
+				# assert False
 			else:
 				active_slots = active_slots.to(device=acts.device, dtype=torch.long)
 			assert active_slots.numel() == sz_batch
-
+			
+			# Ensure fetched Tensor is on the same device, or the program may crash for its sake.
 			if cache.lengths.device != acts.device:
 				cache.lengths = cache.lengths.to(acts.device)
-			if cache.active.device != acts.device:
-				cache.active = cache.active.to(acts.device)
-
+			# if cache.active.device != acts.device:
+			# 	cache.active = cache.active.to(acts.device)
+			
 			start_pos = cache.lengths.index_select(0, active_slots).clone()
+			"""	Please see the comments of KVCache::lengths
+				it makes a start_pos (we called length in simple KV Cache) mappings.
+				For example, suppose
+				`state.active_slots: tensor([2, 0])` and `acts.shape: [2, 1, chan]`
+				`start_pos[0] = cache.lengths[2]`
+				`start_pos[1] = cache.lengths[0]`
+			"""
 			for row in range(sz_batch):
 				pos = int(start_pos[row].item())
 				cos, sin = self.rope.get_rope_cache(pos, sz_seq, acts.device)
 				q[row:row + 1], k[row:row + 1] = RoPE.apply_rotary(q[row:row + 1], k[row:row + 1], cos, sin)
-
+			
 			need = int((start_pos + sz_seq).max().item())
 			old_cap = 0 if cache.k is None else cache.k.size(2)
+			
 			if cache.k is None or cache.v is None:
+				# Initialization
 				new_cap = max(need, 16)
 				cache.k = k.new_zeros((cache.max_batch, self.kv_head, new_cap, head_dim))
 				cache.v = v.new_zeros((cache.max_batch, self.kv_head, new_cap, head_dim))
 			elif old_cap < need:
+				# Auto growth with pre-allocation
 				new_cap = max(need, old_cap * 2)
 				extra = new_cap - old_cap
 				cache.k = torch.cat((cache.k, cache.k.new_zeros((cache.max_batch, self.kv_head, extra, head_dim))), dim=2)
 				cache.v = torch.cat((cache.v, cache.v.new_zeros((cache.max_batch, self.kv_head, extra, head_dim))), dim=2)
-
+			
 			for row, slot_tensor in enumerate(active_slots):
 				slot = int(slot_tensor.item())
 				length = int(start_pos[row].item())
 				cache.k[slot, :, length:length + sz_seq] = k[row]
 				cache.v[slot, :, length:length + sz_seq] = v[row]
 				cache.lengths[slot] = length + sz_seq
-				cache.active[slot] = True
-
+				# cache.active[slot] = True
+			
 			lengths = cache.lengths.index_select(0, active_slots)
 			kv_len = int(lengths.max().item())
 			k = cache.k.index_select(0, active_slots)[:, :, :kv_len, :]
 			v = cache.v.index_select(0, active_slots)[:, :, :kv_len, :]
-
+			
 			key_pos = torch.arange(kv_len, device=acts.device)
 			query_pos = start_pos[:, None] + torch.arange(sz_seq, device=acts.device)[None, :]
 			valid_keys = key_pos[None, None, None, :] < lengths[:, None, None, None]
 			causal = key_pos[None, None, None, :] <= query_pos[:, None, :, None]
 			causal_mask = valid_keys & causal
 			is_causal = False
-
+		
 		group_size = self.q_head // self.kv_head
 		q_len = q.size(2)
 		kv_len = k.size(2)
-
+		
 		if self.sdpa:
 			# KV Cache issue: q_len != kv_len, needs offset causal mask
 			# GQA issue: q_head != kv_head, needs `enable_gqa=True` or `repeat_interleave`
 			y = F.scaled_dot_product_attention(
 				q, k, v,
-				attn_mask=causal_mask,
-				is_causal=is_causal,
+				attn_mask=causal_mask, is_causal=is_causal,
 				dropout_p=self.drop if self.training else 0.0,
 				enable_gqa=True
 			)
@@ -274,13 +302,14 @@ class Attention2(nn.Module):
 				att = F.softmax(att, dim=-1)
 				att = self.attn_dropout(att)
 				outs.append(att @ vg)
-
+				
 			y = torch.cat(outs, dim=1)
-
+		
 		y = y.transpose(1, 2).contiguous().view(sz_batch, sz_seq, sz_embd)
 		y = self.o_proj(y)
 		y = self.residual_dropout(y)
 		return y
+
 
 class FeedForward(nn.Module):
 	def __init__(self, chan: int, drop: float, mlp_mul: int):
@@ -312,6 +341,7 @@ class TransformerBlock(nn.Module):
 		acts = acts + self.attn(self.ln_1(acts), state)
 		acts = acts + self.mlp(self.ln_2(acts), state)
 		return acts
+
 
 class GPT(nn.Module):
 	def __init__(self, opt: GPTOption):
@@ -345,14 +375,14 @@ class GPT(nn.Module):
 					p, mean=0.0, std=0.02 / math.sqrt(2 * opt.layer)
 				)
 		print(f"number of parameters: {(self.get_num_params() / 1e6):.2f}M")
-		
+	
 	def get_num_params(self, exclude_embeddings=True):
 		# Many people have extremely weird preferences that they don't want embeddings are counted
 		n_params = sum(p.numel() for p in self.parameters())
 		if exclude_embeddings:
 			n_params -= cast(nn.Embedding, self.transformer.wte).weight.numel()
 		return n_params
-
+	
 	def _init_weights(self, module: Any):
 		if isinstance(module, nn.Linear):
 			torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -393,10 +423,12 @@ class GPT(nn.Module):
 		print(f"using fused AdamW: {use_fused}")
 		return optimizer
 	
-	# DecoderState(0) is created once, then reused forever.
-	# If any field of state changes (and you do mutate layer_id), every future call shares that same object.
 	def forward(self, input: Tensor, targets: Tensor | None = None,
 			state: DecoderState | None = None) -> tuple[Tensor, Tensor | None]:
+		"""	DecoderState(0) is created once, then reused forever.
+			If any field of state changes (and you do mutate layer_id),
+				every future call shares that same object.
+		"""
 		if state is None:
 			state = DecoderState()
 		assert not (self.training and state.kv_cache is not None)
@@ -409,7 +441,7 @@ class GPT(nn.Module):
 			# or block in cast(nn.ModuleList, self.transformer.h):
 			# sstate.layer_id = i
 			x = cast(nn.ModuleList, self.transformer.h)[i](x, state)
-			
+		
 		x = cast(Norm1, self.transformer.ln_f)(x)
 		logits: torch.Tensor
 		if targets is not None:
@@ -421,22 +453,23 @@ class GPT(nn.Module):
 			logits = self.lm_head(x[:, -1, :])
 			loss = None
 		return logits, loss
-		
+	
 	@torch.no_grad
-	def generate(self, idx, max_new_tokens: int, temperature: float=1.0, top_k: int|None=None) -> Tensor:
+	def generate(self, idx, max_new_tokens: int, temperature: float=1.0,
+			top_k: int|None=None) -> Tensor:
 		"""Static-batch generation reference implementation."""
 		state = DecoderState(
 			[KVCache(idx.size(0)) for _ in range(self.opt.layer)],
 			torch.arange(idx.size(0), dtype=torch.long, device=idx.device)
 		)
-
+		
 		for step in range(max_new_tokens):
 			idx_cond = idx if step == 0 else idx[:, -1:]
 			logits, _ = self(idx_cond, None, state)
 			idx_next = self.sample_next_token(logits, temperature, top_k)
 			idx = torch.cat((idx, idx_next), dim=1)
 		return idx
-
+	
 	@staticmethod
 	def sample_next_token(logits: Tensor, temperature: float=1.0, top_k: int|None=None) -> Tensor:
 		logits = logits / temperature
@@ -445,5 +478,7 @@ class GPT(nn.Module):
 			logits = logits.masked_fill(logits < v[:, [-1]], -float("inf"))
 		probs = F.softmax(logits, dim=-1)
 		return torch.multinomial(probs, num_samples=1)
-
+	
+	def get_device(self):
+		return next(self.parameters()).device
 
