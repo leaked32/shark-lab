@@ -1,3 +1,8 @@
+"""
+shark-lab
+shared/model.py
+"""
+
 import math
 import inspect
 from typing import cast, Any, Protocol
@@ -25,62 +30,7 @@ class GPTOption:
 	kv_head: int
 	rope_base: float = 10000.0
 	# bias: bool = False # not supported yet
-
-class KVCache:
-	def __init__(self, max_batch: int):
-		self.k: Tensor | None = None
-		self.v: Tensor | None = None
-		self.max_batch = max_batch
-		self.lengths = torch.zeros(max_batch, dtype=torch.long)
-		""" slot-based KV cache preallocates a larger tensor than the actual sequences currently need.
-			this Tensor is used to determine what current writing position is.
-			That said, in KV Cache, this represents the positions of true position of K and V.
-			RoPE requires the current positions
-			Right now every layer has its own lengths tensor,
-			but the sequence length of a request is identical across all transformer layers.
-		"""
-		# self.active = torch.zeros(max_batch, dtype=torch.bool)
 	
-	def clear_slot(self, slot: int):
-		self.lengths[slot] = 0
-		# self.active[slot] = False
-
-@dataclass
-class DecoderState:
-	kv_cache: list[KVCache] | None = None
-	active_slots: Tensor | None = None
-	"""	The mappings
-		For example, `active_slots: tensor([1, 0])` means
-		`row 0 -> slot 1` and `row 1 -> slot 0`
-	"""
-
-class INorm(Protocol):
-	def __call__(self, x: torch.Tensor) -> torch.Tensor: ...
-	
-class IAttention(Protocol):
-	def __call__(self, x: torch.Tensor, state: DecoderState) -> torch.Tensor: ...
-	
-class Norm0(nn.Module):
-	""" The trend now is LayerNorm -> RMSNorm """
-	def __init__(self, chan: int, eps: float, bias: bool = False):
-		super().__init__()
-		self.weight = nn.Parameter(torch.ones(chan))
-		self.bias = nn.Parameter(torch.zeros(chan)) if bias else None
-		self.eps = eps
-		
-	def forward(self, input: torch.Tensor) -> torch.Tensor:
-		return F.layer_norm(input, self.weight.shape, self.weight, self.bias, self.eps)
-
-class Norm1(nn.Module):
-	""" Implemented as RMSNorm instead """
-	def __init__(self, chan: int, eps: float):
-		super().__init__()
-		self.weight = nn.Parameter(torch.ones(chan))
-		self.eps = eps
-	
-	def forward(self, acts: Tensor) -> Tensor:
-		return F.rms_norm(acts, self.weight.shape, self.weight, self.eps)
-
 class RoPE(nn.Module):
 	"""
 	Meta's implementation and Hugging Face's implementation both keep
@@ -132,6 +82,182 @@ class RoPE(nn.Module):
 		cos = emb.cos()[None, None, :, :]
 		sin = emb.sin()[None, None, :, :]
 		return cos, sin
+
+
+class IKVCache(Protocol):
+	def clear_slot(self, slot: int) -> None: ...
+
+	def in_forward(self, q: Tensor, k: Tensor, v: Tensor,
+			acts: Tensor, rope: RoPE, active_slots: Tensor
+			) -> tuple[Tensor, Tensor, Tensor, Tensor]: ...
+
+class INorm(Protocol):
+	def __call__(self, x: torch.Tensor) -> torch.Tensor: ...
+
+class DecoderState:
+	def __init__(self, kv_cache: list[IKVCache] | None = None,
+			  active_slots: Tensor | None = None):
+		self.kv_cache: list[IKVCache] | None = kv_cache
+		self.active_slots: Tensor | None = active_slots
+		"""	The mappings
+			For example, `active_slots: tensor([1, 0])` means
+			`row 0 -> slot 1` and `row 1 -> slot 0`
+		"""
+	def get_active_slots(self, sz_batch: int, device) -> Tensor:
+		"""	If forward is called without it,
+			like simple generate function, the program will be falsely asserted.
+		"""
+		if self.active_slots is None:
+			y = torch.arange(sz_batch, dtype=torch.long, device=device)
+			# assert False
+		else:
+			y = self.active_slots.to(device=device, dtype=torch.long)
+		return y
+
+class IAttention(Protocol):
+	def __call__(self, x: torch.Tensor, state: DecoderState) -> torch.Tensor: ...
+	
+class KVCache1:
+	"""	Implemented for slot KV Cache
+	"""
+	def __init__(self, max_batch: int):
+		self.k: Tensor | None = None
+		self.v: Tensor | None = None
+		self.max_batch = max_batch
+		self.lengths = torch.zeros(max_batch, dtype=torch.long)
+		""" slot-based KV cache preallocates a larger tensor than the actual sequences currently need.
+			this Tensor is used to determine what current writing position is.
+			That said, in KV Cache, this represents the positions of true position of K and V.
+			RoPE requires the current positions
+			Right now every layer has its own lengths tensor,
+			but the sequence length of a request is identical across all transformer layers.
+			NOTE all seq in one batch shares the same capacity since the storage is still
+			contiguous.
+		"""
+		# self.active = torch.zeros(max_batch, dtype=torch.bool)
+	
+	def clear_slot(self, slot: int):
+		self.lengths[slot] = 0
+		# self.active[slot] = False
+	
+	def in_forward(self, q: Tensor, k: Tensor, v: Tensor,
+			acts: Tensor, rope: RoPE, active_slots: Tensor):
+		# Ensure fetched Tensor is on the same device, or the program may crash for its sake.
+		
+		sz_batch, sz_seq, sz_embd = acts.size()
+		
+		assert k.size(1) == v.size(1)
+		assert active_slots.dtype == torch.long
+		assert active_slots.device == acts.device
+		assert active_slots.numel() == sz_batch
+		assert int(active_slots.min().item()) >= 0
+		assert int(active_slots.max().item()) < self.max_batch
+		assert active_slots.unique().numel() == active_slots.numel()
+		
+		kv_head = k.size(1)
+		head_dim = q.size(-1)
+		
+		if self.lengths.device != acts.device:
+			self.lengths = self.lengths.to(acts.device)
+		# if cache.active.device != acts.device:
+		# 	cache.active = cache.active.to(acts.device)
+		
+		start_pos = self.lengths.index_select(0, active_slots).clone()
+		"""	Please see the comments of KVCache::lengths
+			it makes a start_pos (we called length in simple KV Cache) mappings.
+			For example, suppose
+			`state.active_slots: tensor([2, 0])` and `acts.shape: [2, 1, chan]`
+			`start_pos[0] = cache.lengths[2]`
+			`start_pos[1] = cache.lengths[0]`
+		"""
+		for row in range(sz_batch):
+			pos = int(start_pos[row].item())
+			cos, sin = rope.get_rope_cache(pos, sz_seq, acts.device)
+			q[row:row + 1], k[row:row + 1] = (
+				RoPE.apply_rotary(q[row:row + 1], k[row:row + 1], cos, sin)
+			)
+		
+		least_cap = int((start_pos + sz_seq).max().item())
+		older_cap = 0 if self.k is None else self.k.size(2)
+		
+		if self.k is None or self.v is None:
+			# Initialization
+			new_cap = max(least_cap, 16)
+			self.k = k.new_zeros(
+				(self.max_batch, kv_head, new_cap, head_dim))
+			self.v = v.new_zeros(
+				(self.max_batch, kv_head, new_cap, head_dim))
+		elif older_cap < least_cap:
+			# Auto growth with pre-allocation
+			new_cap = max(least_cap, older_cap * 2)
+			extra = new_cap - older_cap
+			self.k = torch.cat((self.k,
+				self.k.new_zeros(
+					(self.max_batch, kv_head, extra, head_dim))
+				), dim=2)
+			self.v = torch.cat((self.v,
+				self.v.new_zeros(
+					(self.max_batch, kv_head, extra, head_dim))
+				), dim=2)
+		
+		for row, slot_tensor in enumerate(active_slots):
+			slot = int(slot_tensor.item())
+			length = int(start_pos[row].item())
+			self.k[slot, :, length:length + sz_seq] = k[row]
+			self.v[slot, :, length:length + sz_seq] = v[row]
+			self.lengths[slot] = length + sz_seq
+			# cache.active[slot] = True
+		
+		lengths = self.lengths.index_select(0, active_slots)
+		kv_len = int(lengths.max().item())
+		k = self.k.index_select(0, active_slots)[:, :, :kv_len, :]
+		v = self.v.index_select(0, active_slots)[:, :, :kv_len, :]
+		
+		key_pos = torch.arange(kv_len, device=acts.device)
+		query_pos = (
+			start_pos[:, None] +
+			torch.arange(sz_seq, device=acts.device)[None, :]
+			)
+		valid_keys = key_pos[None, None, None, :] < lengths[:, None, None, None]
+		"""	Element-wise comparison. Suppose, 
+			key_pos = tensor([0, 1, 2, 3, 4])
+			lengths = tensor([2, 4])
+			lengths[:, None, None, None]
+			[ [[[2]]], [[[4]]] ]
+			key_pos[None, None, None, :]
+			[[[[0, 1, 2, 3, 4]]]]
+		"""
+		causal = key_pos[None, None, None, :] <= query_pos[:, None, :, None]
+		causal_mask = valid_keys & causal
+		
+		return q, k, v, causal_mask
+
+class KVCache2:
+	"""	Implemented as Paged KV Cache
+	"""
+	def __init__(self, max_batch: int, num_blocks: int, block_size: int):
+		...
+
+class Norm0(nn.Module):
+	""" The trend now is LayerNorm -> RMSNorm """
+	def __init__(self, chan: int, eps: float, bias: bool = False):
+		super().__init__()
+		self.weight = nn.Parameter(torch.ones(chan))
+		self.bias = nn.Parameter(torch.zeros(chan)) if bias else None
+		self.eps = eps
+		
+	def forward(self, input: torch.Tensor) -> torch.Tensor:
+		return F.layer_norm(input, self.weight.shape, self.weight, self.bias, self.eps)
+
+class Norm1(nn.Module):
+	""" Implemented as RMSNorm instead """
+	def __init__(self, chan: int, eps: float):
+		super().__init__()
+		self.weight = nn.Parameter(torch.ones(chan))
+		self.eps = eps
+	
+	def forward(self, acts: Tensor) -> Tensor:
+		return F.rms_norm(acts, self.weight.shape, self.weight, self.eps)
 
 
 class Attention2(nn.Module):
@@ -203,73 +329,14 @@ class Attention2(nn.Module):
 			causal_mask = None
 			is_causal = True
 		else:
-			active_slots = state.active_slots
-			if active_slots is None:
-				# I should consider replacing this line by assertion since to force the user pass the correct initial active_slots. Instead of embedding it in the `forward` in attention.
-				# But no, if forward is called without it, like simple generate function, the program will be falsely asserted.
-				active_slots = torch.arange(sz_batch, dtype=torch.long, device=acts.device)
-				# assert False
-			else:
-				active_slots = active_slots.to(device=acts.device, dtype=torch.long)
+			active_slots = state.get_active_slots(sz_batch, acts.device)
 			assert active_slots.numel() == sz_batch
 			
-			# Ensure fetched Tensor is on the same device, or the program may crash for its sake.
-			if cache.lengths.device != acts.device:
-				cache.lengths = cache.lengths.to(acts.device)
-			# if cache.active.device != acts.device:
-			# 	cache.active = cache.active.to(acts.device)
+			q, k, v, causal_mask = (
+				cache.in_forward(q, k, v, acts, self.rope, active_slots)
+			)
 			
-			start_pos = cache.lengths.index_select(0, active_slots).clone()
-			"""	Please see the comments of KVCache::lengths
-				it makes a start_pos (we called length in simple KV Cache) mappings.
-				For example, suppose
-				`state.active_slots: tensor([2, 0])` and `acts.shape: [2, 1, chan]`
-				`start_pos[0] = cache.lengths[2]`
-				`start_pos[1] = cache.lengths[0]`
-			"""
-			for row in range(sz_batch):
-				pos = int(start_pos[row].item())
-				cos, sin = self.rope.get_rope_cache(pos, sz_seq, acts.device)
-				q[row:row + 1], k[row:row + 1] = RoPE.apply_rotary(q[row:row + 1], k[row:row + 1], cos, sin)
-			
-			need = int((start_pos + sz_seq).max().item())
-			old_cap = 0 if cache.k is None else cache.k.size(2)
-			
-			if cache.k is None or cache.v is None:
-				# Initialization
-				new_cap = max(need, 16)
-				cache.k = k.new_zeros((cache.max_batch, self.kv_head, new_cap, head_dim))
-				cache.v = v.new_zeros((cache.max_batch, self.kv_head, new_cap, head_dim))
-			elif old_cap < need:
-				# Auto growth with pre-allocation
-				new_cap = max(need, old_cap * 2)
-				extra = new_cap - old_cap
-				cache.k = torch.cat((cache.k, cache.k.new_zeros((cache.max_batch, self.kv_head, extra, head_dim))), dim=2)
-				cache.v = torch.cat((cache.v, cache.v.new_zeros((cache.max_batch, self.kv_head, extra, head_dim))), dim=2)
-			
-			for row, slot_tensor in enumerate(active_slots):
-				slot = int(slot_tensor.item())
-				length = int(start_pos[row].item())
-				cache.k[slot, :, length:length + sz_seq] = k[row]
-				cache.v[slot, :, length:length + sz_seq] = v[row]
-				cache.lengths[slot] = length + sz_seq
-				# cache.active[slot] = True
-			
-			lengths = cache.lengths.index_select(0, active_slots)
-			kv_len = int(lengths.max().item())
-			k = cache.k.index_select(0, active_slots)[:, :, :kv_len, :]
-			v = cache.v.index_select(0, active_slots)[:, :, :kv_len, :]
-			
-			key_pos = torch.arange(kv_len, device=acts.device)
-			query_pos = start_pos[:, None] + torch.arange(sz_seq, device=acts.device)[None, :]
-			valid_keys = key_pos[None, None, None, :] < lengths[:, None, None, None]
-			causal = key_pos[None, None, None, :] <= query_pos[:, None, :, None]
-			causal_mask = valid_keys & causal
 			is_causal = False
-		
-		group_size = self.q_head // self.kv_head
-		q_len = q.size(2)
-		kv_len = k.size(2)
 		
 		if self.sdpa:
 			# KV Cache issue: q_len != kv_len, needs offset causal mask
@@ -287,6 +354,10 @@ class Attention2(nn.Module):
 				Plain math implementation (fallback)
 			"""
 		else:
+			group_size = self.q_head // self.kv_head
+			q_len = q.size(2)
+			kv_len = k.size(2)
+			
 			outs = []
 			for kv_idx in range(self.kv_head):
 				qg = q[:, kv_idx * group_size: (kv_idx + 1) * group_size]
@@ -459,7 +530,7 @@ class GPT(nn.Module):
 			top_k: int|None=None) -> Tensor:
 		"""Static-batch generation reference implementation."""
 		state = DecoderState(
-			[KVCache(idx.size(0)) for _ in range(self.opt.layer)],
+			[KVCache1(idx.size(0)) for _ in range(self.opt.layer)],
 			torch.arange(idx.size(0), dtype=torch.long, device=idx.device)
 		)
 		

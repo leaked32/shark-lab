@@ -5,6 +5,7 @@ import requests
 import tomllib
 import re
 import os
+import argparse
 
 from typing import Any
 from dataclasses import dataclass
@@ -34,6 +35,13 @@ def print_result(ok: bool, ok_count: int, total: int, error: str | None = None):
 	if error is not None:
 		row("Error", error or "")
 	row("Success", f"{ok_count} / {total}    {ok_count/max(total,1):.1%}")
+	print(LINE)
+	
+def print_except(status: str, except1: str, try1: str):
+	row("Status", status)
+	# Do not change, index should align with python value for easy debugging
+	row("Except", except1)
+	row("Try", try1)
 	print(LINE)
 
 
@@ -67,17 +75,37 @@ def find_element_in_case(x: list, case: str) -> Any:
 # LLM CALL
 # =========================
 
-def call_llm(options: collector_options, prompt):
+def call_llm(options: collector_options, prompt: str) -> str:
 	payload = {
 		"model": "default",
 		"messages": [{"role": "system", "content": prompt}],
-		"temperature": options.meta_options['config']['temperature'],
-		"max_tokens": options.meta_options['config']['max_tokens'],
+		"temperature": options.meta_options["config"]["temperature"],
+		"max_tokens": options.meta_options["config"]["max_tokens"],
 	}
 
-	r = requests.post(options.meta_options['config']['model_url'], json=payload, timeout=600)
-	r.raise_for_status()
-	return r.json()["choices"][0]["message"]["content"]
+	while True:
+		try:
+			r = requests.post(
+				options.meta_options["config"]["model_url"],
+				json=payload,
+				timeout=600
+			)
+			r.raise_for_status()
+
+			response = r.json()
+			return response["choices"][0]["message"]["content"]
+
+		except (
+			requests.exceptions.Timeout,
+			requests.exceptions.ConnectionError,
+			requests.exceptions.HTTPError,
+			requests.exceptions.RequestException,
+			json.JSONDecodeError,
+			KeyError,
+			IndexError,
+			TypeError,
+		) as e:
+			print_except("call_llm internal exception", f"{type(e).__name__}: {e}", "Waiting 30 seconds...")
 
 # =========================
 # VALIDATION
@@ -218,6 +246,9 @@ def rollout(options: collector_options, scenario: str) -> tuple[bool, str | None
 		character_examples=options.meta_dataset["character"]["examples"]
 	)
 	
+	# print(prompt)
+	# exit(0)
+	
 	raw = call_llm(options, prompt)
 	ok, data, error = validate(options, raw)
 	
@@ -299,9 +330,13 @@ def generate(options: collector_options) -> int:
 
 if __name__ == "__main__":
 	# This scirpt works in current working directory by default.
+	parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint.")
+	parser.add_argument('--options', default='meta_options.toml')
+	parser.add_argument('--dataset', default='meta_dataset.toml')
+	args = parser.parse_args()
 	
 	options = collector_options(
-		load_meta_dataset("meta_options.toml"),
-		load_meta_dataset("meta_dataset.toml")
+		load_meta_dataset(args.options),
+		load_meta_dataset(args.dataset)
 		)
 	exit(generate(options))
