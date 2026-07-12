@@ -117,8 +117,39 @@ class DecoderState:
 class IAttention(Protocol):
 	def __call__(self, x: torch.Tensor, state: DecoderState) -> torch.Tensor: ...
 	
+class KVCache0:
+	"""	Implemented as contiguous KV Cache
+	"""
+	def __init__(self):
+		self.k: Tensor | None = None
+		self.v: Tensor | None = None
+	
+	def in_forward(self, q: Tensor, k: Tensor, v: Tensor,
+			acts: Tensor, rope: RoPE, _):
+		_, sz_seq, _ = acts.size()
+		
+		if self.k is not None:
+			start_pos = cast(Tensor, self.k).size(2)
+		else:
+			start_pos = 0
+		
+		cos, sin = rope.get_rope_cache(start_pos, sz_seq, acts.device)
+		# print(q.dtype, k.dtype, v.dtype, cos.dtype, sin.dtype)
+		q, k = RoPE.apply_rotary(q, k, cos, sin)
+		
+		if self.k is None or self.v is None:
+			self.k = k
+			self.v = v
+		else:
+			self.k = torch.cat((self.k, k), dim=2)
+			self.v = torch.cat((self.v, v), dim=2)
+
+		# k = self.k
+		# v = self.v
+		return k, v
+	
 class KVCache1:
-	"""	Implemented for slot KV Cache
+	"""	Implemented as slot KV Cache
 	"""
 	def __init__(self, max_batch: int):
 		self.k: Tensor | None = None
@@ -143,8 +174,7 @@ class KVCache1:
 	def in_forward(self, q: Tensor, k: Tensor, v: Tensor,
 			acts: Tensor, rope: RoPE, active_slots: Tensor):
 		# Ensure fetched Tensor is on the same device, or the program may crash for its sake.
-		
-		sz_batch, sz_seq, sz_embd = acts.size()
+		sz_batch, sz_seq, _ = acts.size()
 		
 		assert k.size(1) == v.size(1)
 		assert active_slots.dtype == torch.long
@@ -159,8 +189,6 @@ class KVCache1:
 		
 		if self.lengths.device != acts.device:
 			self.lengths = self.lengths.to(acts.device)
-		# if cache.active.device != acts.device:
-		# 	cache.active = cache.active.to(acts.device)
 		
 		start_pos = self.lengths.index_select(0, active_slots).clone()
 		"""	Please see the comments of KVCache::lengths
@@ -228,15 +256,144 @@ class KVCache1:
 			[[[[0, 1, 2, 3, 4]]]]
 		"""
 		causal = key_pos[None, None, None, :] <= query_pos[:, None, :, None]
-		causal_mask = valid_keys & causal
+		attention_mask = valid_keys & causal
 		
-		return q, k, v, causal_mask
+		return q, k, v, attention_mask
 
 class KVCache2:
 	"""	Implemented as Paged KV Cache
 	"""
 	def __init__(self, max_batch: int, num_blocks: int, block_size: int):
-		...
+		self.k_pool: Tensor | None = None
+		self.v_pool: Tensor | None = None
+		self.max_batch = max_batch
+		self.num_blocks = num_blocks
+		self.block_size = block_size
+		self.lengths = torch.zeros(max_batch, dtype=torch.long)
+		self.block_tables: list[list[int]] = [[] for _ in range(max_batch)]
+		self.free_blocks: list[int] = list(range(num_blocks - 1, -1, -1))
+	
+	def _init_pool(self, k: Tensor):
+		_, kv_head, _, head_dim = k.shape
+		self.k_pool = k.new_empty((self.num_blocks, kv_head, self.block_size, head_dim))
+		self.v_pool = k.new_empty((self.num_blocks, kv_head, self.block_size, head_dim))
+	
+	def _alloc_block(self) -> int:
+		if not self.free_blocks:
+			raise RuntimeError("Paged KV cache is out of physical blocks")
+		return self.free_blocks.pop()
+	
+	def clear_slot(self, slot: int):
+		self.free_blocks.extend(self.block_tables[slot])
+		self.block_tables[slot].clear()
+		self.lengths[slot] = 0
+	
+	def append(self, active_slots: Tensor, k: Tensor, v: Tensor):
+		if self.k_pool is None or self.v_pool is None:
+			self._init_pool(k)
+		
+		assert self.k_pool is not None
+		assert self.v_pool is not None
+		
+		sz_batch, _, sz_seq, _ = k.shape
+		assert active_slots.numel() == sz_batch
+		
+		if self.lengths.device != k.device:
+			self.lengths = self.lengths.to(k.device)
+		
+		for row, slot_tensor in enumerate(active_slots):
+			slot = int(slot_tensor.item())
+			pos = int(self.lengths[slot].item())
+			
+			# In auto-regressive generation, we usually only append 1 unit of k and v
+			# So it usually doesn't decrease the performance
+			for t in range(sz_seq):
+				logical_pos = pos + t
+				logical_block = logical_pos // self.block_size
+				offset = logical_pos % self.block_size
+				
+				while len(self.block_tables[slot]) <= logical_block:
+					self.block_tables[slot].append(self._alloc_block())
+				
+				physical_block = self.block_tables[slot][logical_block]
+				self.k_pool[physical_block, :, offset, :] = k[row, :, t, :]
+				self.v_pool[physical_block, :, offset, :] = v[row, :, t, :]
+				
+			self.lengths[slot] = pos + sz_seq
+		
+	def gather(self, active_slots: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+		assert self.k_pool is not None
+		assert self.v_pool is not None
+		
+		active_slots = active_slots.to(device=self.lengths.device, dtype=torch.long)
+		lengths = self.lengths.index_select(0, active_slots)
+		kv_len = int(lengths.max().item())
+		
+		sz_batch = active_slots.numel()
+		_, kv_head, _, head_dim = self.k_pool.shape
+		k_dense = self.k_pool.new_empty((sz_batch, kv_head, kv_len, head_dim))
+		v_dense = self.v_pool.new_empty((sz_batch, kv_head, kv_len, head_dim))
+		
+		for row, slot_tensor in enumerate(active_slots):
+			slot = int(slot_tensor.item())
+			length = int(lengths[row].item())
+			write_pos = 0
+			
+			for physical_block in self.block_tables[slot]:
+				if write_pos >= length:
+					break
+				take = min(self.block_size, length - write_pos)
+				k_dense[row, :, write_pos:write_pos + take, :] = self.k_pool[physical_block, :, :take, :]
+				v_dense[row, :, write_pos:write_pos + take, :] = self.v_pool[physical_block, :, :take, :]
+				write_pos += take
+
+		return k_dense, v_dense, lengths
+		
+	def in_forward(self, q: Tensor, k: Tensor, v: Tensor,
+			acts: Tensor, rope: RoPE, active_slots: Tensor):
+		"""	In pure PyTorch, KVCache1 will likely be faster than KVCache2,
+			because PyTorch is good at dense tensor ops,
+			but bad at Python loops over blocks/tokens.
+			
+			I need attention that consumes them directly, without dense gathering.
+			But that usually requires a custom CUDA/Triton kernel,
+			not ordinary Python-level PyTorch.
+		"""
+		
+		# Ensure fetched Tensor is on the same device, or the program may crash for its sake.
+		sz_batch, sz_seq, _ = acts.size()
+		
+		assert k.size(1) == v.size(1)
+		assert active_slots.dtype == torch.long
+		assert active_slots.device == acts.device
+		assert active_slots.numel() == sz_batch
+		assert int(active_slots.min().item()) >= 0
+		assert int(active_slots.max().item()) < self.max_batch
+		assert active_slots.unique().numel() == active_slots.numel()
+		
+		if self.lengths.device != acts.device:
+			self.lengths = self.lengths.to(acts.device)
+		
+		start_pos = self.lengths.index_select(0, active_slots).clone()
+		
+		for row in range(sz_batch):
+			pos = int(start_pos[row].item())
+			cos, sin = rope.get_rope_cache(pos, sz_seq, acts.device)
+			q[row:row + 1], k[row:row + 1] = (
+				RoPE.apply_rotary(q[row:row + 1], k[row:row + 1], cos, sin)
+			)
+		
+		self.append(active_slots, k, v)
+		k, v, lengths = self.gather(active_slots)
+		kv_len = k.size(2)
+		key_pos = torch.arange(kv_len, device=acts.device)
+		query_pos = start_pos[:, None] + torch.arange(sz_seq, device=acts.device)[None, :]
+
+		valid_keys = key_pos[None, None, None, :] < lengths[:, None, None, None]
+		causal = key_pos[None, None, None, :] <= query_pos[:, None, :, None]
+		attention_mask = valid_keys & causal
+		
+		return q, k, v, attention_mask
 
 class Norm0(nn.Module):
 	""" The trend now is LayerNorm -> RMSNorm """
@@ -247,7 +404,8 @@ class Norm0(nn.Module):
 		self.eps = eps
 		
 	def forward(self, input: torch.Tensor) -> torch.Tensor:
-		return F.layer_norm(input, self.weight.shape, self.weight, self.bias, self.eps)
+		return F.layer_norm(
+			input, self.weight.shape, self.weight, self.bias, self.eps)
 
 class Norm1(nn.Module):
 	""" Implemented as RMSNorm instead """
@@ -261,7 +419,8 @@ class Norm1(nn.Module):
 
 
 class Attention2(nn.Module):
-	""" Causal Multi-head Self-Attention
+	"""	Implemented as Causal Multi-head Self-Attention
+		Featured: Grouped Query Attention
 	"""
 	def __init__(self, opt: GPTOption, layer_id: int, sdpa: bool=True):
 		super().__init__()
@@ -301,7 +460,10 @@ class Attention2(nn.Module):
 			pos_k = torch.arange(new_size, device=device)[None, :]
 			self.causal_mask_cache = pos_k <= pos_q
 
-		return self.causal_mask_cache[start_pos:start_pos + q_len, :kv_len].view(1, 1, q_len, kv_len)
+		return (
+			self.causal_mask_cache[start_pos:start_pos + q_len, :kv_len]
+			.view(1, 1, q_len, kv_len)
+		)
 	
 	def forward(self, acts: Tensor, state: DecoderState) -> Tensor:
 		"""Forward pass for training, static generation, and slot-based continuous batching.
