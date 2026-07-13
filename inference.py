@@ -9,7 +9,8 @@ from transformers import AutoTokenizer
 
 import shared.format
 
-def set_torch_options(system_opt: dict[str, Any], device_override: str | None, dtype_override: str | None) -> str:
+def set_torch_options(system_opt: dict[str, Any],
+					  device_override: str | None, dtype_override: str | None) -> str:
 	dtype_name = dtype_override or system_opt.get('dtype', 'float32')
 	device = device_override or system_opt.get('device', 'cpu')
 	dtypes = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}
@@ -64,7 +65,8 @@ def main() -> None:
 		prompt: str = input('prompt: ')
 		idx = encode_prompt(tokenizer, prompt, device)
 		with torch.no_grad():
-			out = model.generate(idx, args.max_new_tokens, temperature=args.temperature, top_k=args.top_k)
+			out = model.generate(idx, args.max_new_tokens,
+						temperature=args.temperature, top_k=args.top_k)
 
 		print(decode_tokens(tokenizer, out))
 

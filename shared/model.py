@@ -544,7 +544,29 @@ class Attention2(nn.Module):
 		return y
 
 
-class FeedForward(nn.Module):
+class IFeedForward(Protocol):
+	def __init__(self, chan: int, drop: float, mlp_mul: int): ...
+	def forward(self, acts: Tensor, state: DecoderState) -> Tensor: ...
+	def __call__(self, acts: Tensor, state: DecoderState) -> Tensor: ...
+
+
+class FeedForward0(nn.Module):
+	""" MLP GELU """
+	def __init__(self, chan: int, drop: float, mlp_mul: int):
+		super().__init__()
+		hidden = chan * mlp_mul
+		self.c_fc = nn.Linear(chan, hidden, False)
+		self.gelu = nn.GELU()
+		self.c_proj = nn.Linear(hidden, chan, False)
+		self.residual_dropout = nn.Dropout(drop)
+	
+	def forward(self, acts: Tensor, state: DecoderState) -> Tensor:
+		y = self.residual_dropout(self.c_proj(self.gelu(self.c_fc(acts))))
+		return y
+
+
+class FeedForward1(nn.Module):
+	""" MLP SwiGLU """
 	def __init__(self, chan: int, drop: float, mlp_mul: int):
 		super().__init__()
 		hidden = chan * mlp_mul
@@ -562,13 +584,16 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-	def __init__(self, norm: INorm, norm1: INorm, attn: IAttention, chan: int, drop: float, mlp_mul: int):
+	def __init__(self, norm: INorm, norm1: INorm, attn: IAttention,
+			mlp: IFeedForward):
+			#chan: int, drop: float, mlp_mul: int):
 		super().__init__()
 		self.ln_1 = norm
 		# self.attn = Attention(chan, head, drop) deprecated
 		self.attn = attn
 		self.ln_2 = norm1
-		self.mlp = FeedForward(chan, drop, mlp_mul)
+		self.mlp = mlp
+		# self.mlp = FeedForward(chan, drop, mlp_mul)
 	
 	def forward(self, acts, state: DecoderState):
 		acts = acts + self.attn(self.ln_1(acts), state)
@@ -592,7 +617,8 @@ class GPT(nn.Module):
 					[TransformerBlock(
 						Norm1(opt.chan, opt.eps), Norm1(opt.chan, opt.eps),
 						Attention2(opt, layer_id), 
-						opt.chan, opt.drop, opt.mlp_mul) for layer_id in range(opt.layer)]),
+						FeedForward1( opt.chan, opt.drop, opt.mlp_mul) )
+						for layer_id in range(opt.layer)]),
 				ln_f=Norm1(opt.chan, opt.eps)
 			)
 		)
@@ -640,10 +666,12 @@ class GPT(nn.Module):
 		num_decay_params = sum(p.numel() for p in decay_params)
 		num_nodecay_params = sum(p.numel() for p in nodecay_params)
 		print(
-			f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
+			f"num decayed parameter tensors: {
+				len(decay_params)}, with {num_decay_params:,} parameters"
 		)
 		print(
-			f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
+			f"num non-decayed parameter tensors: {
+				len(nodecay_params)}, with {num_nodecay_params:,} parameters"
 		)
 		# create AdamW optimizer and use the fused version if it is available
 		fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
@@ -692,7 +720,8 @@ class GPT(nn.Module):
 			top_k: int|None=None) -> Tensor:
 		"""Static-batch generation reference implementation."""
 		state = DecoderState(
-			[KVCache1(idx.size(0)) for _ in range(self.opt.layer)],
+		#	[KVCache1(idx.size(0)) for _ in range(self.opt.layer)],
+			[KVCache2(idx.size(0), num_blocks=1024, block_size=16) for _ in range(self.opt.layer)],
 			torch.arange(idx.size(0), dtype=torch.long, device=idx.device)
 		)
 		
@@ -705,6 +734,13 @@ class GPT(nn.Module):
 	
 	@staticmethod
 	def sample_next_token(logits: Tensor, temperature: float=1.0, top_k: int|None=None) -> Tensor:
+		if not torch.isfinite(logits).all():
+			bad = (~torch.isfinite(logits)).sum().item()
+			raise RuntimeError(
+				f"logits contain {bad} non-finite values; "
+				f"min={torch.nan_to_num(logits).min().item()}, "
+				f"max={torch.nan_to_num(logits).max().item()}"
+			)
 		logits = logits / temperature
 		if top_k is not None:
 			v, _ = torch.topk(logits, min(top_k, logits.size(-1)))

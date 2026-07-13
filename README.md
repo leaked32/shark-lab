@@ -36,6 +36,8 @@ Examples
 python inference.py --config ../shark-gen/options.toml --max-new-tokens 100 --temperature 0.8 --top-k 50
 
 python trainer.py --config ../shark-gen/options.toml
+
+python server.py --config ../shark-gen/options.toml
 ```
 
 
