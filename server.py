@@ -1,23 +1,28 @@
-from dataclasses import dataclass
-from typing import cast
+"""
+shark-lab
+server.py
 
-import torch
-from torch import Tensor
-
-from threading import Thread, Lock, Event
-import time
-import shared.model
+This file is still experimental, it contains test suits for itself.
+"""
 
 import argparse
 import os
 from typing import Any
+import time
+from dataclasses import dataclass
+from threading import Thread, Lock, Event
 
-import torch
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
-
-import shared.format
 import tkinter
 import tkinter.ttk as ttk
+
+import torch
+from torch import Tensor
+
+import shared.model
+import shared.format
+
+
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 @dataclass
 class GenerateRequest:

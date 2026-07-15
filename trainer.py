@@ -45,7 +45,9 @@ def main():
 	ckpt_path = os.path.join(model_path, "ckpt.pt")
 
 	if os.path.exists(ckpt_path):
-		model, optimizer, start_step = shared.format.load_checkpoint(ckpt_path, model, optimizer)
+		model, optimizer, start_step = (
+			shared.format.load_checkpoint(ckpt_path, model, optimizer)
+		)
 	
 	for step in range(start_step, opt.train['max_steps']):
 		x, y = get_batch(opt.train['dataset_train'],

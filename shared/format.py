@@ -42,7 +42,7 @@ def model_from_scratch(opt: trainer_options) -> GPT:
 	
 	opt_model = opt.model
 	if opt_model['vocab'] == 0:
-		print('using tokenizer vocabulary size as GPT vacab')
+		print("since `opt_model['vocab']` is 0, using tokenizer vocabulary size by default")
 		opt_model['vocab'] = vocab_size
 	elif opt_model['vocab'] != vocab_size:
 		notify_confirm(f"Mismatch: opt_model['vocab']: {opt_model['vocab']}, but vocal_size: {vocab_size}.\nContinue will overwrite opt_model['vocab'] with vocal_size from dataset. ")
@@ -61,7 +61,8 @@ def model_from_scratch(opt: trainer_options) -> GPT:
 	return GPT(model_args)
 
 
-def __optimizer_save_checkpoint(path: str, model: GPT, optimizer: torch.optim.AdamW, step: int) -> None:
+def __optimizer_save_checkpoint(path: str, model: GPT, optimizer: torch.optim.AdamW, step: int,
+								) -> None:
 	checkpoint = {
 		'model': model.state_dict(),
 		'optimizer': optimizer.state_dict(),

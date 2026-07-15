@@ -706,11 +706,21 @@ class GPT(nn.Module):
 		x = cast(Norm1, self.transformer.ln_f)(x)
 		logits: torch.Tensor
 		if targets is not None:
+			"""	Training
+				teacher-forcing: Even if the model thinks the next token should be "dog"
+				instead of "cat", we don't feed "dog" back into the next position.
+				We still feed the groud-truth sequence from the dataset.
+			"""	
 			logits = self.lm_head(x)
 			loss = F.cross_entropy(
 				logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
 				)
+			"""	cross_entropy
+			logits -> [softmax] -> probabilities -> [-log(probability of correct label)] ->
+			"average over all prediction positions"
+			"""
 		else:
+			# Inference doesn't produce loss at all
 			logits = self.lm_head(x[:, -1, :])
 			loss = None
 		return logits, loss

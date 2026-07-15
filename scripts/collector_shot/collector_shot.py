@@ -76,6 +76,8 @@ def find_element_in_case(x: list, case: str) -> Any:
 # =========================
 
 def call_llm(options: collector_options, prompt: str) -> str:
+	RETRY_TIMEOUT = 90
+	
 	payload = {
 		"model": "default",
 		"messages": [{"role": "system", "content": prompt}],
@@ -105,7 +107,8 @@ def call_llm(options: collector_options, prompt: str) -> str:
 			IndexError,
 			TypeError,
 		) as e:
-			print_except("call_llm internal exception", f"{type(e).__name__}: {e}", "Waiting 30 seconds...")
+			print_except("call_llm internal exception", f"{type(e).__name__}: {e}", f"Waiting {RETRY_TIMEOUT} seconds...")
+			time.sleep(RETRY_TIMEOUT)
 
 # =========================
 # VALIDATION
@@ -243,9 +246,11 @@ def rollout(options: collector_options, scenario: str) -> tuple[bool, str | None
 	prompt = prompt.format(
 		character_card=options.meta_dataset["character"]["card"],
 		character_scenario=scenario,
-		character_examples=options.meta_dataset["character"]["examples"]
+		character_examples=(
+			find_element_in_case(options.meta_dataset['examples'], mode)
+		)
 	)
-	
+	# options.meta_dataset["character"]["examples"]
 	# print(prompt)
 	# exit(0)
 	
