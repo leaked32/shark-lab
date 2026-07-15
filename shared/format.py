@@ -61,8 +61,8 @@ def model_from_scratch(opt: trainer_options) -> GPT:
 	return GPT(model_args)
 
 
-def __optimizer_save_checkpoint(path: str, model: GPT, optimizer: torch.optim.AdamW, step: int,
-								) -> None:
+def __optimizer_save_checkpoint(
+		path: str, model: GPT, optimizer: torch.optim.AdamW, step: int) -> None:
 	checkpoint = {
 		'model': model.state_dict(),
 		'optimizer': optimizer.state_dict(),
@@ -72,7 +72,8 @@ def __optimizer_save_checkpoint(path: str, model: GPT, optimizer: torch.optim.Ad
 	torch.save(checkpoint, path)
 
 
-def load_model_and_optimizer(meta_opt: dict[str, Any], ckpt_path: str | None, device: str):
+def load_model_and_optimizer(
+		meta_opt: dict[str, Any], ckpt_path: str | None, device: str):
 	opt = trainer_options(meta_opt['model'], meta_opt['train'])
 	model = model_from_scratch(opt)
 	if model is None:
@@ -94,7 +95,8 @@ def save_checkpoint(path: str, model, optimizer, step: int) -> None:
 	__optimizer_save_checkpoint(path, model, optimizer, step)
 
 
-def load_checkpoint(ckpt_path: str, model: GPT, optimizer: torch.optim.AdamW, device: str = 'cpu'):
+def load_checkpoint(
+		ckpt_path: str, model: GPT, optimizer: torch.optim.AdamW, device: str = 'cpu'):
 	if not os.path.exists(ckpt_path):
 		raise FileNotFoundError(f"checkpoint not found: {ckpt_path}")
 	
