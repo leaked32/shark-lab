@@ -28,10 +28,10 @@ class GPTOption:
 	drop: float
 	eps: float
 	kv_head: int
-	rope_base: float = 10000.0
+	rope_theta: float# = 10000.0
 	# bias: bool = False # not supported yet
 	
-class RoPE(nn.Module):
+class RoPE():
 	"""
 	Meta's implementation and Hugging Face's implementation both keep
 	the RoPE cache generation in float32, then cast to the model dtype when using it.
@@ -59,22 +59,22 @@ class RoPE(nn.Module):
 		k = k * cos + RoPE.rotate_half(k) * sin
 		return q, k
 	
-	def __init__(self, head_dim: int, rope_base: float):
+	def __init__(self, head_dim: int, rope_theta: float):
 		assert head_dim % 2 == 0
 		
-		super().__init__()
+		# super().__init__()
 		
 		# def init_rope_cache(self) -> None:
 		#	head_dim = self.chan // self.q_head
-		inv_freq = (
+		self.inv_freq = (
 			1.0 /
-			(rope_base ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
+			(rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
 		)
-		self.register_buffer("inv_freq", inv_freq, persistent=False)
+		# self.register_buffer("inv_freq", inv_freq, persistent=False)
 	
 	def get_rope_cache(self, start_pos: int, seq_len: int, device):
 		# Explicit: pos = torch.arange(start_pos, start_pos + seq_len, device=device).float()
-		inv_freq: Tensor = self.get_buffer("inv_freq").to(device=device)
+		inv_freq: Tensor = self.inv_freq.to(device=device)
 		pos = torch.arange(start_pos, start_pos + seq_len, dtype=inv_freq.dtype, device=device)
 		freqs = torch.outer(pos, inv_freq)
 		emb = torch.cat((freqs, freqs), dim=-1)
@@ -433,7 +433,7 @@ class Attention2(nn.Module):
 		self.kv_head = opt.kv_head
 		self.q_head = opt.q_head
 		self.drop = opt.drop
-		self.rope_base = opt.rope_base
+		self.rope_theta = opt.rope_theta
 		self.sdpa = sdpa
 		self.layer_id = layer_id
 		
@@ -446,7 +446,7 @@ class Attention2(nn.Module):
 		self.attn_dropout = nn.Dropout(self.drop) # Compatibility
 		self.residual_dropout = nn.Dropout(self.drop)
 		
-		self.rope = RoPE(self.chan // self.q_head, self.rope_base)
+		self.rope = RoPE(self.chan // self.q_head, self.rope_theta)
 		self.register_buffer("causal_mask_cache",
 			torch.empty(0, 0, dtype=torch.bool), persistent=False)
 	
@@ -567,20 +567,19 @@ class FeedForward0(nn.Module):
 
 class FeedForward1(nn.Module):
 	""" MLP SwiGLU """
-	def __init__(self, chan: int, drop: float, mlp_mul: int):
+	def __init__(self, chan: int, drop: float, intermediate_size: int):
 		super().__init__()
-		hidden = chan * mlp_mul
-		self.c_fc1 = nn.Linear(chan, hidden, False)
-		self.c_fc2 = nn.Linear(chan, hidden, False)
-		self.silu = nn.SiLU()
-		self.c_proj = nn.Linear(hidden, chan, False)
+		self.gate_proj = nn.Linear(chan, intermediate_size, False)
+		self.up_proj = nn.Linear(chan, intermediate_size, False)
+		self.act_fn = nn.SiLU()
+		self.down_proj = nn.Linear(intermediate_size, chan, False)
 		self.residual_dropout = nn.Dropout(drop)
 
 	def forward(self, acts: Tensor, state: DecoderState) -> Tensor:
-		x1 = self.c_fc1(acts)
-		x2 = self.c_fc2(acts)
-		x = self.silu(x1) * x2
-		return self.residual_dropout(self.c_proj(x))
+		x1 = self.gate_proj(acts)
+		x2 = self.up_proj(acts)
+		x = self.act_fn(x1) * x2
+		return self.residual_dropout(self.down_proj(x))
 
 
 class TransformerBlock(nn.Module):
@@ -588,16 +587,16 @@ class TransformerBlock(nn.Module):
 			mlp: IFeedForward):
 			#chan: int, drop: float, mlp_mul: int):
 		super().__init__()
-		self.ln_1 = norm
 		# self.attn = Attention(chan, head, drop) deprecated
-		self.attn = attn
-		self.ln_2 = norm1
+		self.self_attn = attn
+		self.input_layernorm = norm
+		self.post_attention_layernorm = norm1
 		self.mlp = mlp
 		# self.mlp = FeedForward(chan, drop, mlp_mul)
 	
 	def forward(self, acts, state: DecoderState):
-		acts = acts + self.attn(self.ln_1(acts), state)
-		acts = acts + self.mlp(self.ln_2(acts), state)
+		acts = acts + self.self_attn(self.input_layernorm(acts), state)
+		acts = acts + self.mlp(self.post_attention_layernorm(acts), state)
 		return acts
 
 
@@ -609,37 +608,32 @@ class GPT(nn.Module):
 		
 		self.opt = opt
 		
-		self.transformer = nn.ModuleDict(
+		self.model = nn.ModuleDict(
 			dict(
-				wte=nn.Embedding(opt.vocab, opt.chan),
-				drop=nn.Dropout(opt.drop),
-				h=nn.ModuleList(
+				embed_tokens=nn.Embedding(opt.vocab, opt.chan),
+				layers=nn.ModuleList(
 					[TransformerBlock(
 						Norm1(opt.chan, opt.eps), Norm1(opt.chan, opt.eps),
 						Attention2(opt, layer_id), 
 						FeedForward1( opt.chan, opt.drop, opt.mlp_mul) )
 						for layer_id in range(opt.layer)]),
-				ln_f=Norm1(opt.chan, opt.eps)
+				norm=Norm1(opt.chan, opt.eps)
 			)
 		)
+					
+		self.dropout = nn.Dropout(opt.drop)
 		self.lm_head = nn.Linear(opt.chan, opt.vocab, bias=False)
-		cast(nn.Embedding, self.transformer.wte).weight = self.lm_head.weight
+		cast(nn.Embedding, self.model.embed_tokens).weight = self.lm_head.weight
 		
 		self.apply(self._init_weights)
 		
-		# apply special scaled init to the residual projections, per GPT-2 paper
-		for pn, p in self.named_parameters():
-			if pn.endswith("c_proj.weight"):
-				torch.nn.init.normal_(
-					p, mean=0.0, std=0.02 / math.sqrt(2 * opt.layer)
-				)
 		print(f"number of parameters: {(self.get_num_params() / 1e6):.2f}M")
 	
 	def get_num_params(self, exclude_embeddings=True):
 		# Many people have extremely weird preferences that they don't want embeddings are counted
 		n_params = sum(p.numel() for p in self.parameters())
 		if exclude_embeddings:
-			n_params -= cast(nn.Embedding, self.transformer.wte).weight.numel()
+			n_params -= cast(nn.Embedding, self.model.embed_tokens).weight.numel()
 		return n_params
 	
 	def _init_weights(self, module: Any):
@@ -695,15 +689,15 @@ class GPT(nn.Module):
 		assert not (self.training and state.kv_cache is not None)
 		
 		# predicts = self(input)
-		tok_emb: Tensor = cast(nn.Embedding, self.transformer.wte)(input)
-		x: Tensor = cast(nn.Embedding, self.transformer.drop)(tok_emb)
+		tok_emb: Tensor = cast(nn.Embedding, self.model.embed_tokens)(input)
+		x: Tensor = cast(nn.Dropout, self.dropout)(tok_emb)
 		
-		for i in range(len(cast(nn.ModuleList, self.transformer.h))):
-			# or block in cast(nn.ModuleList, self.transformer.h):
+		for i in range(len(cast(nn.ModuleList, self.model.layers))):
+			# or block in cast(nn.ModuleList, self.model.layers):
 			# sstate.layer_id = i
-			x = cast(nn.ModuleList, self.transformer.h)[i](x, state)
+			x = cast(nn.ModuleList, self.model.layers)[i](x, state)
 		
-		x = cast(Norm1, self.transformer.ln_f)(x)
+		x = cast(Norm1, self.model.norm)(x)
 		logits: torch.Tensor
 		if targets is not None:
 			"""	Training

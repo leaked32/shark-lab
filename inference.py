@@ -56,11 +56,14 @@ def main() -> None:
 
 	opt = shared.format.trainer_options(meta_opt['model'], meta_opt['train'])
 	model = shared.format.model_from_scratch(opt)
-	ckpt_path = args.ckpt or os.path.join(meta_opt['train']['working_directory'], 'ckpt.pt')
-	step = shared.format.load_model_checkpoint(model, ckpt_path, device)
+	# ckpt_path = args.ckpt or os.path.join(meta_opt['train']['working_directory'], 'ckpt.pt')
+	# step = shared.format.load_model_checkpoint(model, ckpt_path, device)
 	model.eval()
-	print(f"loaded checkpoint step {step}")
-
+	# print(f"loaded checkpoint step {step}")
+	
+	print(model)
+	return
+	
 	while True:
 		prompt: str = input('prompt: ')
 		idx = encode_prompt(tokenizer, prompt, device)

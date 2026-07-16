@@ -1,3 +1,7 @@
+"""
+shark-lab
+collector_shot/collector_shot.py
+"""
 import json
 import time
 from datetime import datetime

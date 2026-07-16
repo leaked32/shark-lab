@@ -57,6 +57,7 @@ def model_from_scratch(opt: trainer_options) -> GPT:
 		kv_head=opt_model['kv_head'],
 		layer=opt_model['layer'],
 		mlp_mul=opt_model['mlp_mul'],
+		rope_theta=opt_model['rope_theta'],
 		)
 	return GPT(model_args)
 
@@ -121,3 +122,105 @@ def load_model_checkpoint(model: GPT, ckpt_path: str, device: str = 'cpu') -> in
 def load_meta_dataset(path: str):
 	with open(path, "rb") as f:
 		return tomllib.load(f)
+
+# shared/pretrained.py
+
+from collections import OrderedDict
+import torch
+
+
+def convert_hf_llama_state_dict(
+	state_dict: dict[str, torch.Tensor],
+	prefix: str = "model."
+) -> OrderedDict[str, torch.Tensor]:
+	"""
+	Convert HuggingFace LlamaForCausalLM naming
+	to shark-lab Llama naming.
+
+	Only handles key translation.
+	Architecture compatibility must be checked separately.
+	"""
+
+	out = OrderedDict()
+
+	global_map = {
+		"model.embed_tokens.weight":
+			"transformer.wte.weight",
+
+		"model.norm.weight":
+			"transformer.ln_f.weight",
+
+		"lm_head.weight":
+			"lm_head.weight",
+	}
+
+	for old_key, new_key in global_map.items():
+		if old_key in state_dict:
+			out[new_key] = state_dict[old_key]
+
+	num_layers = 0
+
+	for key in state_dict:
+		if key.startswith("model.layers."):
+			num_layers = max(
+				num_layers,
+				int(key.split(".")[2]) + 1
+			)
+
+	for i in range(num_layers):
+		layer_map = {
+			f"model.layers.{i}.input_layernorm.weight":
+				f"transformer.h.{i}.ln_1.weight",
+
+			f"model.layers.{i}.post_attention_layernorm.weight":
+				f"transformer.h.{i}.ln_2.weight",
+
+			f"model.layers.{i}.self_attn.q_proj.weight":
+				f"transformer.h.{i}.attn.q_proj.weight",
+
+			f"model.layers.{i}.self_attn.k_proj.weight":
+				f"transformer.h.{i}.attn.k_proj.weight",
+
+			f"model.layers.{i}.self_attn.v_proj.weight":
+				f"transformer.h.{i}.attn.v_proj.weight",
+
+			f"model.layers.{i}.self_attn.o_proj.weight":
+				f"transformer.h.{i}.attn.o_proj.weight",
+
+			f"model.layers.{i}.mlp.gate_proj.weight":
+				f"transformer.h.{i}.mlp.c_fc1.weight",
+
+			f"model.layers.{i}.mlp.up_proj.weight":
+				f"transformer.h.{i}.mlp.c_fc2.weight",
+
+			f"model.layers.{i}.mlp.down_proj.weight":
+				f"transformer.h.{i}.mlp.c_proj.weight",
+		}
+
+		for old_key, new_key in layer_map.items():
+			if old_key in state_dict:
+				out[new_key] = state_dict[old_key]
+
+	return out
+
+def load_hf_checkpoint(model, hf_path):
+	checkpoint = torch.load(hf_path, map_location="cpu")
+
+	state_dict = convert_hf_llama_state_dict(
+		checkpoint
+	)
+
+	missing, unexpected = model.load_state_dict(
+		state_dict,
+		strict=False
+	)
+
+	print("Missing:")
+	for k in missing:
+		print(k)
+
+	print("Unexpected:")
+	for k in unexpected:
+		print(k)
+
+	return model
