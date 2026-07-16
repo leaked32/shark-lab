@@ -1,12 +1,16 @@
 from typing import Any
 from shared.util import notify_confirm
+from collections.abc import Mapping
 
 from shared.model import GPT, GPTOption
 from dataclasses import dataclass
 import tomllib
+from collections import OrderedDict
 import os
 
 import torch
+import torch.nn as nn
+from torch import Tensor as Tensor
 
 
 def get_tokenizer_vocab_count(tokenizer_path: str) -> int:
@@ -125,102 +129,92 @@ def load_meta_dataset(path: str):
 
 # shared/pretrained.py
 
-from collections import OrderedDict
-import torch
 
+def validate_state_dict_compatibility(
+	model: nn.Module,
+	hf_state: Mapping[str, Tensor],
+) -> None:
+	my_state = model.state_dict()
 
-def convert_hf_llama_state_dict(
-	state_dict: dict[str, torch.Tensor],
-	prefix: str = "model."
-) -> OrderedDict[str, torch.Tensor]:
-	"""
-	Convert HuggingFace LlamaForCausalLM naming
-	to shark-lab Llama naming.
+	missing: list[str] = []
+	unexpected: list[str] = []
+	shape_mismatches: list[
+		tuple[str, tuple[int, ...], tuple[int, ...]]
+	] = []
+	dtype_mismatches: list[
+		tuple[str, torch.dtype, torch.dtype]
+	] = []
 
-	Only handles key translation.
-	Architecture compatibility must be checked separately.
-	"""
+	for key, tensor in hf_state.items():
+		if key not in my_state:
+			unexpected.append(key)
+			continue
 
-	out = OrderedDict()
+		my_tensor = my_state[key]
 
-	global_map = {
-		"model.embed_tokens.weight":
-			"transformer.wte.weight",
-
-		"model.norm.weight":
-			"transformer.ln_f.weight",
-
-		"lm_head.weight":
-			"lm_head.weight",
-	}
-
-	for old_key, new_key in global_map.items():
-		if old_key in state_dict:
-			out[new_key] = state_dict[old_key]
-
-	num_layers = 0
-
-	for key in state_dict:
-		if key.startswith("model.layers."):
-			num_layers = max(
-				num_layers,
-				int(key.split(".")[2]) + 1
+		if tensor.shape != my_tensor.shape:
+			shape_mismatches.append(
+				(key, tuple(tensor.shape), tuple(my_tensor.shape))
 			)
 
-	for i in range(num_layers):
-		layer_map = {
-			f"model.layers.{i}.input_layernorm.weight":
-				f"transformer.h.{i}.ln_1.weight",
+		if tensor.dtype != my_tensor.dtype:
+			dtype_mismatches.append(
+				(key, tensor.dtype, my_tensor.dtype)
+			)
 
-			f"model.layers.{i}.post_attention_layernorm.weight":
-				f"transformer.h.{i}.ln_2.weight",
+	for key in my_state:
+		if key not in hf_state:
+			missing.append(key)
 
-			f"model.layers.{i}.self_attn.q_proj.weight":
-				f"transformer.h.{i}.attn.q_proj.weight",
+	print(f"Hugging Face keys: {len(hf_state)}")
+	print(f"Local model keys:   {len(my_state)}")
 
-			f"model.layers.{i}.self_attn.k_proj.weight":
-				f"transformer.h.{i}.attn.k_proj.weight",
+	print(f"\nMissing from HF checkpoint: {len(missing)}")
+	for key in missing:
+		print(f"  {key}")
 
-			f"model.layers.{i}.self_attn.v_proj.weight":
-				f"transformer.h.{i}.attn.v_proj.weight",
+	print(f"\nUnexpected HF keys: {len(unexpected)}")
+	for key in unexpected:
+		print(f"  {key}")
 
-			f"model.layers.{i}.self_attn.o_proj.weight":
-				f"transformer.h.{i}.attn.o_proj.weight",
+	print(f"\nShape mismatches: {len(shape_mismatches)}")
+	for key, hf_shape, my_shape in shape_mismatches:
+		print(
+			f"  {key}: "
+			f"HF={hf_shape}, local={my_shape}"
+		)
 
-			f"model.layers.{i}.mlp.gate_proj.weight":
-				f"transformer.h.{i}.mlp.c_fc1.weight",
+	print(f"\nDtype differences: {len(dtype_mismatches)}")
+	for key, hf_dtype, my_dtype in dtype_mismatches:
+		print(
+			f"  {key}: "
+			f"HF={hf_dtype}, local={my_dtype}"
+		)
 
-			f"model.layers.{i}.mlp.up_proj.weight":
-				f"transformer.h.{i}.mlp.c_fc2.weight",
+	if missing or unexpected or shape_mismatches:
+		raise RuntimeError(
+			"Checkpoint is not structurally compatible with the model."
+		)
 
-			f"model.layers.{i}.mlp.down_proj.weight":
-				f"transformer.h.{i}.mlp.c_proj.weight",
-		}
 
-		for old_key, new_key in layer_map.items():
-			if old_key in state_dict:
-				out[new_key] = state_dict[old_key]
+def load_hf_state_dict(
+	model: nn.Module,
+	hf_state: Mapping[str, Tensor],
+) -> nn.Module:
+	validate_state_dict_compatibility(model, hf_state)
 
-	return out
+	my_state = model.state_dict()
 
-def load_hf_checkpoint(model, hf_path):
-	checkpoint = torch.load(hf_path, map_location="cpu")
+	converted_state = {
+		key: tensor.to(
+			device=my_state[key].device,
+			dtype=my_state[key].dtype,
+		)
+		for key, tensor in hf_state.items()
+	}
 
-	state_dict = convert_hf_llama_state_dict(
-		checkpoint
-	)
+	model.load_state_dict(converted_state, strict=True)
 
-	missing, unexpected = model.load_state_dict(
-		state_dict,
-		strict=False
-	)
-
-	print("Missing:")
-	for k in missing:
-		print(k)
-
-	print("Unexpected:")
-	for k in unexpected:
-		print(k)
+	model.lm_head.weight = model.model.embed_tokens.weight
 
 	return model
