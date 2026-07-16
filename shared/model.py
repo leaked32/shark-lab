@@ -736,6 +736,35 @@ class GPT(nn.Module):
 			idx = torch.cat((idx, idx_next), dim=1)
 		return idx
 	
+	@torch.no_grad()
+	def generate(self, idx: Tensor, max_new_tokens: int, temperature: float = 1.0,
+		top_k: int | None = None, eos_token_id: int | None = None) -> Tensor:
+		state = DecoderState(
+		#	[KVCache1(idx.size(0)) for _ in range(self.opt.layer)],
+			[KVCache2(idx.size(0), num_blocks=1024, block_size=16) for _ in range(self.opt.layer)],
+			torch.arange(idx.size(0), dtype=torch.long, device=idx.device)
+		)
+
+		for step in range(max_new_tokens):
+			idx_cond = idx if step == 0 else idx[:, -1:]
+
+			logits, _ = self(idx_cond, None, state)
+			idx_next = self.sample_next_token(
+				logits,
+				temperature,
+				top_k,
+			)
+
+			idx = torch.cat((idx, idx_next), dim=1)
+
+			if (
+				eos_token_id is not None
+				and torch.all(idx_next == eos_token_id)
+			):
+				break
+
+		return idx
+	
 	@staticmethod
 	def sample_next_token(logits: Tensor, temperature: float=1.0, top_k: int|None=None) -> Tensor:
 		if not torch.isfinite(logits).all():

@@ -20,9 +20,11 @@ from torch import Tensor
 
 import shared.model
 import shared.format
+import shared.util
 
 
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
+# from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from tokenizers import Tokenizer
 
 @dataclass
 class GenerateRequest:
@@ -69,7 +71,7 @@ class GenerationContext:
 
 class GenerationEngine:
 	def __init__(self, model: shared.model.GPT,
-			tokenizer: PreTrainedTokenizerBase, max_batch: int,
+			tokenizer: Tokenizer, max_batch: int,
 			temperature: float=1.0, top_k: int|None=None,
 			stop_strings: tuple[str, ...]=("\nChumbud:", "\nScenario:")):
 		self.next_id = 0
@@ -79,10 +81,10 @@ class GenerationEngine:
 
 		self.model = model
 		self.tokenizer = tokenizer
-		self.eos_token_id = tokenizer.eos_token_id
+		self.eos_token_id = tokenizer.token_to_id("<|im_end|>")
 		self.stop_sequences = {
 			text: torch.tensor(
-				tokenizer.encode(text, add_special_tokens=False),
+				tokenizer.encode(text, add_special_tokens=False).ids,
 				dtype=torch.long
 			)
 			for text in stop_strings
@@ -252,6 +254,7 @@ class GenerationEngine:
 		return self.requests
 
 
+"""
 def set_torch_options(system_opt: dict[str, Any]) -> str:
 	dtype_name = system_opt.get('dtype', 'float32')
 	device = system_opt.get('device', 'cpu')
@@ -261,7 +264,6 @@ def set_torch_options(system_opt: dict[str, Any]) -> str:
 	torch.set_default_dtype(dtypes[dtype_name])
 	torch.set_default_device(device)
 	return device
-
 def encode_prompt(tokenizer: Any, prompt: str, device) -> torch.Tensor:
 	ids = tokenizer.encode(prompt, add_special_tokens=False)
 	if len(ids) == 0:
@@ -273,8 +275,9 @@ def encode_prompt(tokenizer: Any, prompt: str, device) -> torch.Tensor:
 def decode_tokens(tokenizer: Any, tokens: torch.Tensor) -> str:
 	ids = tokens[0].detach().cpu().tolist()
 	return tokenizer.decode(ids, skip_special_tokens=False)
+"""
 
-def demon_ui(engine: GenerationEngine, tokenizer: AutoTokenizer):
+def demon_ui(engine: GenerationEngine, tokenizer: Tokenizer):
 	root = tkinter.Tk()
 	root.title("LLM Debugger")
 	root.geometry("800x600")
@@ -287,11 +290,13 @@ def demon_ui(engine: GenerationEngine, tokenizer: AutoTokenizer):
 		def engine_worker():
 			while not worker_stop.is_set():
 				try:
+					did_work = False
 					with engine.lock:
 						if engine.has_active():
 							engine.step()
-						else:
-							time.sleep(0.01)
+							did_work = True
+					if not did_work:
+						time.sleep(0.01)
 				except Exception as exc:
 					root.after(
 						0,
@@ -331,14 +336,16 @@ def demon_ui(engine: GenerationEngine, tokenizer: AutoTokenizer):
 			input_text.delete(0, tkinter.END)
 
 			try:
-				req = engine.add(
-					encode_prompt(
-						tokenizer,
-						prompt,
-						engine.model.get_device()
-					),
-					128
+				chat_text = shared.util.format_chat([
+					{"role": "user", "content": prompt}
+				])
+				idx = shared.util.text_idx(
+					tokenizer,
+					chat_text,
+					engine.model.get_device(),
 				)
+				req = engine.add(idx, 128)
+				
 			except Exception as exc:
 				generation_failed(exc)
 				return
@@ -405,7 +412,10 @@ def demon_ui(engine: GenerationEngine, tokenizer: AutoTokenizer):
 						f"generated={req.generated_tokens}/{req.max_new_tokens}\n"
 					)
 
-					text = decode_tokens(tokenizer, req.input_ids)
+					text = tokenizer.decode(
+						req.input_ids[0].detach().cpu().tolist(),
+						skip_special_tokens=False,
+					)
 					requests_text.insert(tkinter.END, text + "\n\n")
 
 				for req in requests_snapshot:
@@ -413,7 +423,10 @@ def demon_ui(engine: GenerationEngine, tokenizer: AutoTokenizer):
 						generated_ids = req.input_ids[:, req.prompt_len:]
 						generated_texts.append((
 							req.id,
-							decode_tokens(tokenizer, generated_ids)
+							tokenizer.decode(
+							generated_ids[0].detach().cpu().tolist(),
+							skip_special_tokens=True,
+						)
 						))
 						displayed_requests.add(req.id)
 
@@ -514,15 +527,31 @@ def main() -> None:
 		torch.manual_seed(args.seed)
 
 	meta_opt = shared.format.load_meta_dataset(args.config)
-	device = set_torch_options(meta_opt['system'])
+	device, dtype = shared.util.resolve_runtime(
+		meta_opt["system"], args.device, args.dtype
+	)
 
-	tokenizer_path = meta_opt['train']['tokenizer_path']
-	tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+	tokenizer_path = meta_opt["train"]["tokenizer_path"]
+	tokenizer = Tokenizer.from_file(
+		os.path.join(tokenizer_path, "tokenizer.json")
+	)
 
 	opt = shared.format.trainer_options(meta_opt['model'], meta_opt['train'])
+	checkpoint_path = args.ckpt or os.path.join(
+		opt.train["working_directory"],
+		"ckpt.pt",
+	)
+
+	# Construct and load on CPU before moving to the inference device.
+	torch.set_default_device("cpu")
 	model = shared.format.model_from_scratch(opt)
-	ckpt_path = args.ckpt or os.path.join(meta_opt['train']['working_directory'], 'ckpt.pt')
-	step = shared.format.load_model_checkpoint(model, ckpt_path, device)
+
+	step = shared.format.load_model_checkpoint(
+		model,
+		checkpoint_path,
+		map_location="cpu",
+	)
+	model.to(device=device, dtype=dtype)
 	model.eval()
 	print(f"loaded checkpoint step {step}")
 	
@@ -530,21 +559,9 @@ def main() -> None:
 		model,
 		tokenizer,
 		max_batch=4,
-		stop_strings=("\nChumbud:", "\nScenario:")
+		stop_strings=("<|im_end|>",)
 	)
 	demon_ui(engine, tokenizer)
-	"""
-	engine.add()
-
-	while True:
-		prompt: str = input('prompt: ')
-		idx = encode_prompt(tokenizer, prompt, device)
-		with torch.no_grad():
-			out = model.generate(idx, args.max_new_tokens,
-						temperature=args.temperature, top_k=args.top_k)
-
-		print(decode_tokens(tokenizer, out))
-		"""
 
 if __name__ == '__main__':
 	main()

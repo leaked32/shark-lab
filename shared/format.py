@@ -13,6 +13,7 @@ from torch import Tensor
 
 from shared.model import GPT, GPTOption
 
+from tokenizers import Tokenizer
 
 @dataclass
 class trainer_options:
@@ -21,7 +22,6 @@ class trainer_options:
 
 def model_from_scratch(opt: trainer_options) -> GPT:
 	def get_tokenizer_vocab_count(tokenizer_path: str) -> int:
-		from tokenizers import Tokenizer
 		tokenizer = Tokenizer.from_file(
 			os.path.join(tokenizer_path, "tokenizer.json")
 		)
@@ -211,5 +211,4 @@ def load_hf_state_dict(
 
 	# load_state_dict already performs destination dtype/device conversion.
 	model.load_state_dict(hf_state, strict=True)
-
 

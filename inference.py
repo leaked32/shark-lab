@@ -8,131 +8,9 @@ import torch
 from tokenizers import Tokenizer
 
 import shared.format
+import shared.util
 
 
-
-DEFAULT_SYSTEM_PROMPT = (
-	"You are a helpful AI assistant named SmolLM, "
-	"trained by Hugging Face"
-)
-
-
-def format_chat(
-	messages: list[dict[str, str]],
-	add_generation_prompt: bool = True,
-) -> str:
-	if not messages:
-		raise ValueError("messages cannot be empty")
-
-	valid_roles = {"system", "user", "assistant"}
-
-	for message in messages:
-		if message["role"] not in valid_roles:
-			raise ValueError(
-				f"unsupported role: {message['role']}"
-			)
-
-	formatted: list[str] = []
-
-	if messages[0]["role"] != "system":
-		formatted.append(
-			f"<|im_start|>system\n"
-			f"{DEFAULT_SYSTEM_PROMPT}"
-			f"<|im_end|>\n"
-		)
-
-	for message in messages:
-		formatted.append(
-			f"<|im_start|>{message['role']}\n"
-			f"{message['content']}"
-			f"<|im_end|>\n"
-		)
-
-	if add_generation_prompt:
-		formatted.append("<|im_start|>assistant\n")
-
-	return "".join(formatted)
-
-
-def resolve_runtime(
-	system_opt: dict[str, Any],
-	device_override: str | None,
-	dtype_override: str | None,
-) -> tuple[torch.device, torch.dtype]:
-	dtype_name = dtype_override or system_opt.get("dtype", "float32")
-	device_name = device_override or system_opt.get("device", "cpu")
-
-	dtypes = {
-		"float32": torch.float32,
-		"bfloat16": torch.bfloat16,
-		"float16": torch.float16,
-	}
-
-	if dtype_name not in dtypes:
-		raise ValueError(f"unsupported dtype: {dtype_name}")
-
-	device = torch.device(device_name)
-
-	if device.type == "cuda" and not torch.cuda.is_available():
-		raise RuntimeError("CUDA was requested but is unavailable")
-
-	return device, dtypes[dtype_name]
-
-"""
-def encode_prompt1(
-	tokenizer: Any,
-	prompt: str,
-	device: torch.device,
-) -> torch.Tensor:
-	ids = tokenizer.encode(prompt, add_special_tokens=False)
-
-	if not ids:
-		if tokenizer.eos_token_id is None:
-			raise ValueError(
-				"empty prompt and tokenizer has no eos token"
-			)
-		ids = [tokenizer.eos_token_id]
-
-	return torch.tensor([ids], dtype=torch.long, device=device)
-
-def encode_prompt(
-	tokenizer: Any,
-	prompt: str,
-	device: torch.device,
-) -> torch.Tensor:
-	encoded = tokenizer.apply_chat_template(
-		[
-			{
-				"role": "user",
-				"content": prompt,
-			}
-		],
-		tokenize=True,
-		add_generation_prompt=True,
-		return_tensors="pt",
-	)
-
-	return encoded["input_ids"].to(device)
-
-
-def decode_tokens1(tokenizer: Any, tokens: torch.Tensor) -> str:
-	return tokenizer.decode(
-		tokens[0].detach().cpu().tolist(),
-		skip_special_tokens=False,
-	)
-
-def decode_tokens(
-	tokenizer: Any,
-	tokens: torch.Tensor,
-	prompt_length: int,
-) -> str:
-	generated = tokens[0, prompt_length:].detach().cpu().tolist()
-
-	return tokenizer.decode(
-		generated,
-		skip_special_tokens=True,
-	)
-"""
 
 def main() -> None:
 	parser = argparse.ArgumentParser(
@@ -153,11 +31,7 @@ def main() -> None:
 	args = parser.parse_args()
 
 	meta_opt = shared.format.load_meta_dataset(args.config)
-	device, dtype = resolve_runtime(
-		meta_opt["system"],
-		args.device,
-		args.dtype,
-	)
+	device, dtype = shared.util.resolve_runtime(meta_opt["system"], args.device, args.dtype)
 
 	if args.seed is not None:
 		torch.manual_seed(args.seed)
@@ -170,6 +44,10 @@ def main() -> None:
 	tokenizer = Tokenizer.from_file(
 		os.path.join(tokenizer_path, "tokenizer.json")
 	)
+	eos_token_id = tokenizer.token_to_id("<|im_end|>")
+
+	if eos_token_id is None:
+		raise ValueError("tokenizer has no <|im_end|> token")
 
 	opt = shared.format.trainer_options(
 		meta_opt["model"],
@@ -211,19 +89,8 @@ def main() -> None:
 				"role": "user",
 				"content": prompt,
 			})
-		text = format_chat(history)
-		
-		ids = tokenizer.encode(
-			text,
-			add_special_tokens=False,
-		).ids
-
-		idx = torch.tensor(
-			[ids],
-			dtype=torch.long,
-			device=device,
-		)
-		
+		text = shared.util.format_chat(history)
+		idx = shared.util.text_idx(tokenizer, text, device)
 		# idx = encode_prompt(tokenizer, prompt, device)
 
 		with torch.inference_mode():
@@ -232,19 +99,10 @@ def main() -> None:
 				args.max_new_tokens,
 				temperature=args.temperature,
 				top_k=args.top_k,
+				eos_token_id=eos_token_id,
 			)
-
-		generated_ids = (
-			output[0, idx.shape[1]:]
-			.detach()
-			.cpu()
-			.tolist()
-		)
-
-		reply = tokenizer.decode(
-			generated_ids,
-			skip_special_tokens=True,
-		)
+		
+		reply = shared.util.idx_text(tokenizer, output, idx.shape[1])
 
 		print(reply)
 
