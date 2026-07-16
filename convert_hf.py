@@ -4,11 +4,62 @@ import argparse
 import gc
 import os
 from typing import Any
+from collections.abc import Mapping
 
 import torch
 from transformers import AutoModelForCausalLM
 
 import shared.format
+
+import torch.nn as nn
+from torch import Tensor as Tensor
+
+def validate_state_dict_compatibility(
+	model: nn.Module,
+	source_state: Mapping[str, Tensor],
+) -> None:
+	local_state = model.state_dict()
+
+	missing = sorted(set(local_state) - set(source_state))
+	unexpected = sorted(set(source_state) - set(local_state))
+
+	shape_mismatches = [
+		(key, tuple(source_state[key].shape), tuple(local_state[key].shape))
+		for key in sorted(set(source_state) & set(local_state))
+		if source_state[key].shape != local_state[key].shape
+	]
+
+	if missing:
+		print(f"missing keys: {len(missing)}")
+		for key in missing:
+			print(f"\t{key}")
+
+	if unexpected:
+		print(f"unexpected keys: {len(unexpected)}")
+		for key in unexpected:
+			print(f"\t{key}")
+
+	if shape_mismatches:
+		print(f"shape mismatches: {len(shape_mismatches)}")
+		for key, source_shape, local_shape in shape_mismatches:
+			print(
+				f"\t{key}: source={source_shape}, local={local_shape}"
+			)
+
+	if missing or unexpected or shape_mismatches:
+		raise RuntimeError("model architectures are incompatible")
+
+	print(f"state dictionary validated: {len(local_state)} tensors")
+
+def load_hf_state_dict(
+	model: nn.Module,
+	hf_state: Mapping[str, Tensor],
+) -> None:
+	validate_state_dict_compatibility(model, hf_state)
+
+	# load_state_dict already performs destination dtype/device conversion.
+	model.load_state_dict(hf_state, strict=True)
+
 
 
 def resolve_dtype(name: str) -> torch.dtype:
@@ -61,7 +112,7 @@ def main() -> None:
 		device_map="cpu",
 	)
 
-	shared.format.load_hf_state_dict(
+	load_hf_state_dict(
 		local_model,
 		hf_model.state_dict(),
 	)

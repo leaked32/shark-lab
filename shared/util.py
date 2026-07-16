@@ -4,8 +4,6 @@ import torch
 import numpy as np
 from torch import Tensor as Tensor
 
-from tokenizers import Tokenizer
-
 def notify_confirm(msg: str):
 	print(msg)
 	x = input('Do you wish to continue? Y/ Yes or No: ').lower()
@@ -57,90 +55,8 @@ def resolve_runtime(
 
 	return device, dtypes[dtype_name]
 
-# =================================================================================================
-# TOKENIZER
-# =================================================================================================
-
-DEFAULT_SYSTEM_PROMPT = (
-	"You are a helpful AI assistant named SmolLM, "
-	"trained by Hugging Face"
-)
 
 
-def format_chat(
-	messages: list[dict[str, str]],
-	add_generation_prompt: bool = True,
-) -> str:
-	if not messages:
-		raise ValueError("messages cannot be empty")
-
-	valid_roles = {"system", "user", "assistant"}
-
-	for message in messages:
-		if message["role"] not in valid_roles:
-			raise ValueError(
-				f"unsupported role: {message['role']}"
-			)
-
-	formatted: list[str] = []
-
-	if messages[0]["role"] != "system":
-		formatted.append(
-			f"<|im_start|>system\n"
-			f"{DEFAULT_SYSTEM_PROMPT}"
-			f"<|im_end|>\n"
-		)
-
-	for message in messages:
-		formatted.append(
-			f"<|im_start|>{message['role']}\n"
-			f"{message['content']}"
-			f"<|im_end|>\n"
-		)
-
-	if add_generation_prompt:
-		formatted.append("<|im_start|>assistant\n")
-
-	return "".join(formatted)
-
-
-
-def text_idx(
-	tokenizer: Tokenizer,
-	text: str,
-	device: torch.device,
-) -> Tensor:
-	ids = tokenizer.encode(
-		text,
-		add_special_tokens=False,
-	).ids
-
-	if not ids:
-		raise ValueError("encoded prompt is empty")
-
-	return torch.tensor(
-		[ids],
-		dtype=torch.long,
-		device=device,
-	)
-
-
-def idx_text(
-	tokenizer: Tokenizer,
-	output: Tensor,
-	prompt_length: int,
-) -> str:
-	generated_ids = (
-		output[0, prompt_length:]
-		.detach()
-		.cpu()
-		.tolist()
-	)
-
-	return tokenizer.decode(
-		generated_ids,
-		skip_special_tokens=True,
-	).strip()
 
 """
 

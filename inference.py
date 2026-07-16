@@ -1,3 +1,9 @@
+"""
+shark-lab
+inference.py
+
+The file test the model by calling generate of GPT directly.
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +16,14 @@ from tokenizers import Tokenizer
 import shared.format
 import shared.util
 
+"""
 
+DEFAULT_SYSTEM_PROMPT = (
+	"You are a helpful AI assistant named SmolLM, "
+	"trained by Hugging Face"
+)
+
+"""
 
 def main() -> None:
 	parser = argparse.ArgumentParser(
@@ -53,6 +66,7 @@ def main() -> None:
 		meta_opt["model"],
 		meta_opt["train"],
 	)
+	system_prompt = meta_opt["infer"]["system_prompt"]
 
 	checkpoint_path = args.ckpt or os.path.join(
 		opt.train["working_directory"],
@@ -89,8 +103,8 @@ def main() -> None:
 				"role": "user",
 				"content": prompt,
 			})
-		text = shared.util.format_chat(history)
-		idx = shared.util.text_idx(tokenizer, text, device)
+		text = shared.format.format_chat(history, system_prompt)
+		idx = shared.format.text_idx(tokenizer, text, device)
 		# idx = encode_prompt(tokenizer, prompt, device)
 
 		with torch.inference_mode():
@@ -102,7 +116,7 @@ def main() -> None:
 				eos_token_id=eos_token_id,
 			)
 		
-		reply = shared.util.idx_text(tokenizer, output, idx.shape[1])
+		reply = shared.format.idx_text(tokenizer, output, idx.shape[1])
 
 		print(reply)
 

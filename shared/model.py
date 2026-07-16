@@ -718,11 +718,10 @@ class GPT(nn.Module):
 			logits = self.lm_head(x[:, -1, :])
 			loss = None
 		return logits, loss
-	
+	"""
 	@torch.no_grad
 	def generate(self, idx, max_new_tokens: int, temperature: float=1.0,
 			top_k: int|None=None) -> Tensor:
-		"""Static-batch generation reference implementation."""
 		state = DecoderState(
 		#	[KVCache1(idx.size(0)) for _ in range(self.opt.layer)],
 			[KVCache2(idx.size(0), num_blocks=1024, block_size=16) for _ in range(self.opt.layer)],
@@ -735,10 +734,13 @@ class GPT(nn.Module):
 			idx_next = self.sample_next_token(logits, temperature, top_k)
 			idx = torch.cat((idx, idx_next), dim=1)
 		return idx
+	"""
 	
 	@torch.no_grad()
 	def generate(self, idx: Tensor, max_new_tokens: int, temperature: float = 1.0,
 		top_k: int | None = None, eos_token_id: int | None = None) -> Tensor:
+		"""Static-batch generation reference implementation."""
+		
 		state = DecoderState(
 		#	[KVCache1(idx.size(0)) for _ in range(self.opt.layer)],
 			[KVCache2(idx.size(0), num_blocks=1024, block_size=16) for _ in range(self.opt.layer)],
@@ -749,11 +751,7 @@ class GPT(nn.Module):
 			idx_cond = idx if step == 0 else idx[:, -1:]
 
 			logits, _ = self(idx_cond, None, state)
-			idx_next = self.sample_next_token(
-				logits,
-				temperature,
-				top_k,
-			)
+			idx_next = self.sample_next_token(logits, temperature, top_k)
 
 			idx = torch.cat((idx, idx_next), dim=1)
 

@@ -336,10 +336,10 @@ def demon_ui(engine: GenerationEngine, tokenizer: Tokenizer):
 			input_text.delete(0, tkinter.END)
 
 			try:
-				chat_text = shared.util.format_chat([
+				chat_text = shared.format.format_chat([
 					{"role": "user", "content": prompt}
 				])
-				idx = shared.util.text_idx(
+				idx = shared.format.text_idx(
 					tokenizer,
 					chat_text,
 					engine.model.get_device(),

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import tempfile
 import tomllib
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -165,50 +164,74 @@ def load_meta_dataset(path: str) -> dict[str, Any]:
 		return tomllib.load(file)
 
 
-def validate_state_dict_compatibility(
-	model: nn.Module,
-	source_state: Mapping[str, Tensor],
-) -> None:
-	local_state = model.state_dict()
+# =================================================================================================
+# TOKENIZER
+# =================================================================================================
 
-	missing = sorted(set(local_state) - set(source_state))
-	unexpected = sorted(set(source_state) - set(local_state))
+def format_chat(
+	messages: list[dict[str, str]],
+	system_propmt: str,
+	add_generation_prompt: bool = True,
+) -> str:
+	if not messages:
+		raise ValueError("messages cannot be empty")
 
-	shape_mismatches = [
-		(key, tuple(source_state[key].shape), tuple(local_state[key].shape))
-		for key in sorted(set(source_state) & set(local_state))
-		if source_state[key].shape != local_state[key].shape
-	]
+	valid_roles = {"system", "user", "assistant"}
 
-	if missing:
-		print(f"missing keys: {len(missing)}")
-		for key in missing:
-			print(f"\t{key}")
-
-	if unexpected:
-		print(f"unexpected keys: {len(unexpected)}")
-		for key in unexpected:
-			print(f"\t{key}")
-
-	if shape_mismatches:
-		print(f"shape mismatches: {len(shape_mismatches)}")
-		for key, source_shape, local_shape in shape_mismatches:
-			print(
-				f"\t{key}: source={source_shape}, local={local_shape}"
+	for message in messages:
+		if message["role"] not in valid_roles:
+			raise ValueError(
+				f"unsupported role: {message['role']}"
 			)
 
-	if missing or unexpected or shape_mismatches:
-		raise RuntimeError("model architectures are incompatible")
+	formatted: list[str] = []
 
-	print(f"state dictionary validated: {len(local_state)} tensors")
+	if messages[0]["role"] != "system":
+		formatted.append(
+			f"<|im_start|>system\n"
+			f"{system_propmt}"
+			f"<|im_end|>\n"
+		)
 
+	for message in messages:
+		formatted.append(
+			f"<|im_start|>{message['role']}\n"
+			f"{message['content']}"
+			f"<|im_end|>\n"
+		)
 
-def load_hf_state_dict(
-	model: nn.Module,
-	hf_state: Mapping[str, Tensor],
-) -> None:
-	validate_state_dict_compatibility(model, hf_state)
+	if add_generation_prompt:
+		formatted.append("<|im_start|>assistant\n")
 
-	# load_state_dict already performs destination dtype/device conversion.
-	model.load_state_dict(hf_state, strict=True)
+	return "".join(formatted)
 
+def text_idx(tokenizer, text: str, device) -> Tensor:
+
+	ids = tokenizer.encode(
+		text,
+		add_special_tokens=False,
+	).ids
+
+	idx = torch.tensor(
+		[ids],
+		dtype=torch.long,
+		device=device,
+	)
+	
+	return idx
+
+def idx_text(tokenizer, output, begin) -> str:
+	
+	generated_ids = (
+		output[0, begin:]
+		.detach()
+		.cpu()
+		.tolist()
+	)
+
+	reply = tokenizer.decode(
+		generated_ids,
+		skip_special_tokens=True,
+	)
+	
+	return reply
