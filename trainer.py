@@ -45,8 +45,11 @@ def main():
 	ckpt_path = os.path.join(model_path, "ckpt.pt")
 
 	if os.path.exists(ckpt_path):
-		model, optimizer, start_step = (
-			shared.format.load_checkpoint(ckpt_path, model, optimizer)
+		start_step = shared.format.load_training_checkpoint(
+			ckpt_path,
+			model,
+			optimizer,
+			map_location=opt_sys["device"],
 		)
 	
 	for step in range(start_step, opt.train['max_steps']):
@@ -63,8 +66,13 @@ def main():
 
 		if step % opt.train['log_interval'] == 0:
 			print(f"step {step} | loss {loss.item():.4f}")
-		if step > start_step and step % opt.train['save_interval'] == 0:
-			shared.format.save_checkpoint(os.path.join(model_path, 'ckpt.pt'), model, optimizer, step)
+		if (step + 1) % opt.train["save_interval"] == 0:
+			shared.format.save_training_checkpoint(
+				ckpt_path,
+				model,
+				optimizer,
+				next_step=step + 1,
+			)
 
 if __name__ == '__main__':
 	exit(main())
