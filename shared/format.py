@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 import tomllib
+import json
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
@@ -21,6 +22,8 @@ from torch import Tensor
 from shared.model import GPT, GPTOption
 
 from tokenizers import Tokenizer
+
+import shared.util
 
 @dataclass
 class trainer_options:
@@ -155,14 +158,16 @@ def load_training_checkpoint(
 
 	if "model" not in checkpoint:
 		raise RuntimeError("checkpoint contains no model state")
+	else:
+		model.load_state_dict(checkpoint["model"], strict=True)
 
 	if "optimizer" not in checkpoint:
-		raise RuntimeError("checkpoint contains no optimizer state")
-
-	model.load_state_dict(checkpoint["model"], strict=True)
-	optimizer.load_state_dict(checkpoint["optimizer"])
-
-	next_step = int(checkpoint.get("step", 0))
+		shared.util.notify_confirm("checkpoint contains no optimizer state")
+		next_step = 0
+	else:
+		optimizer.load_state_dict(checkpoint["optimizer"])
+		next_step = int(checkpoint.get("step", 0))
+	
 	print(f"resumed training from step {next_step}")
 	return next_step
 

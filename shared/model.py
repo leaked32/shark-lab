@@ -559,10 +559,9 @@ class FeedForward0(nn.Module):
 	""" MLP GELU """
 	def __init__(self, chan: int, drop: float, mlp_mul: int):
 		super().__init__()
-		hidden = chan * mlp_mul
-		self.c_fc = nn.Linear(chan, hidden, False)
+		self.c_fc = nn.Linear(chan, mlp_mul, False)
 		self.gelu = nn.GELU()
-		self.c_proj = nn.Linear(hidden, chan, False)
+		self.c_proj = nn.Linear(mlp_mul, chan, False)
 		self.residual_dropout = nn.Dropout(drop)
 	
 	def forward(self, acts: Tensor, state: DecoderState) -> Tensor:
@@ -572,12 +571,12 @@ class FeedForward0(nn.Module):
 
 class FeedForward1(nn.Module):
 	""" MLP SwiGLU """
-	def __init__(self, chan: int, drop: float, intermediate_size: int):
+	def __init__(self, chan: int, drop: float, mlp_mul: int):
 		super().__init__()
-		self.gate_proj = nn.Linear(chan, intermediate_size, False)
-		self.up_proj = nn.Linear(chan, intermediate_size, False)
+		self.gate_proj = nn.Linear(chan, mlp_mul, False)
+		self.up_proj = nn.Linear(chan, mlp_mul, False)
 		self.act_fn = nn.SiLU()
-		self.down_proj = nn.Linear(intermediate_size, chan, False)
+		self.down_proj = nn.Linear(mlp_mul, chan, False)
 		self.residual_dropout = nn.Dropout(drop)
 
 	def forward(self, acts: Tensor, state: DecoderState) -> Tensor:

@@ -33,11 +33,14 @@ scripts/
 
 Examples
 ```bash
-python inference.py --config ../shark-gen/options.toml --max-new-tokens 100 --temperature 0.8 --top-k 50
+python inference.py \
+  --config ../shark-gen/options.toml \
+  --max-new-tokens 100 --temperature 0.8 --top-k 50
+
 python convert_hf.py \
-	--config options.toml \
-	--source HuggingFaceTB/SmolLM2-360M-Instruct \
-	--output checkpoints/smollm2-instruct.pt
+  --config options.toml \
+  --source HuggingFaceTB/SmolLM2-360M-Instruct \
+  --output checkpoints/smollm2-instruct.pt
 
 python trainer.py --config ../shark-gen/options.toml
 

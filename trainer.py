@@ -2,12 +2,14 @@ import os
 
 import argparse
 import shared.format
-from shared.util import get_batch, JsonlDataset, JsonlMessage
+from shared.util import get_batch
 
 from tokenizers import Tokenizer
 import torch
 from torch import Tensor
 
+import random
+from typing import cast
 
 def main():
 	parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint.")
@@ -30,9 +32,8 @@ def main():
 	# Trainer
 	opt = shared.format.trainer_options(meta_opt['model'], meta_opt['train'])
 	tokenizer_path = opt.train["tokenizer_path"]
+	tokenizer, eos_token_id = shared.format.get_tokenizer(tokenizer_path)
 	
-	tokenizer, eos_token_id = shared.format.get_tokenizer(
-		opt.train["tokenizer_path"])
 	
 	model_path: str = opt.train['working_directory']
 	os.makedirs(model_path, exist_ok=True)
@@ -58,10 +59,32 @@ def main():
 			optimizer,
 			map_location=opt_sys["device"],
 		)
+	dataset_type: int = opt.train["dataset_type"]
+	batch_count: int = opt.train['corpus_batch_size']
+	
+	match cast(int, dataset_type):
+		case 1:
+			dataset_context = shared.format.JsonlDataset(opt.train["dataset_sft_train"])
+			comfy_arange: list[int] = [i for i in range(len(dataset_context.items))]
+			puckered = comfy_arange.copy()
+			random.shuffle(puckered)
+	
 	
 	for step in range(start_step, opt.train['max_steps']):
-		x, y = get_batch(opt.train['dataset_train'],
-			opt.train['corpus_block_size'], opt.train['corpus_batch_size'])
+		x: Tensor
+		y: Tensor
+		match cast(int, dataset_type):
+			case 0:
+				x, y = get_batch(opt.train['dataset_train'],
+					opt.train['corpus_block_size'], batch_count)
+			case 1:
+				if len(puckered) == 0:
+					puckered = comfy_arange.copy()
+					random.shuffle(puckered)
+				cindex = puckered.pop()
+				x, y = dataset_context.to_sft_tensors(tokenizer, -1, cindex)
+				x = x.unsqueeze(0)
+				y = y.unsqueeze(0)
 
 		_, loss = model(x, y)
 
