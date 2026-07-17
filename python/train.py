@@ -1,4 +1,5 @@
 import os
+import time
 
 import argparse
 import shared.format
@@ -10,6 +11,14 @@ from torch import Tensor
 
 import random
 from typing import cast
+
+
+def enlarge_to_fit(x: Tensor, least_len: int, mm: int) -> Tensor:
+	raw_len = x.size(0)
+	if raw_len < least_len:
+		y = x.new_full((least_len - raw_len,), mm)
+		return torch.cat((x, y), dim=-1)
+	return x
 
 def main():
 	parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint.")
@@ -64,7 +73,9 @@ def main():
 	
 	match cast(int, dataset_type):
 		case 1:
-			dataset_context = shared.format.JsonlDataset(opt.train["dataset_sft_train"])
+			jsonl_path: str = opt.train["dataset_sft_train"]
+			print(f"SFT jsonl_path: {jsonl_path}")
+			dataset_context = shared.format.JsonlDataset(jsonl_path)
 			comfy_arange: list[int] = [i for i in range(len(dataset_context.items))]
 			puckered = comfy_arange.copy()
 			random.shuffle(puckered)
@@ -78,13 +89,33 @@ def main():
 				x, y = get_batch(opt.train['dataset_train'],
 					opt.train['corpus_block_size'], batch_count)
 			case 1:
-				if len(puckered) == 0:
-					puckered = comfy_arange.copy()
-					random.shuffle(puckered)
-				cindex = puckered.pop()
-				x, y = dataset_context.to_sft_tensors(tokenizer, -1, cindex)
-				x = x.unsqueeze(0)
-				y = y.unsqueeze(0)
+				lx: list[Tensor] = []
+				ly: list[Tensor] = []
+				max_len = 0
+
+				for _ in range(batch_count):
+					if not puckered:
+						puckered = comfy_arange.copy()
+						random.shuffle(puckered)
+
+					cindex = puckered.pop()
+					cx, cy = dataset_context.to_sft_tensors(
+						tokenizer,
+						-1,
+						cindex,
+					)
+					assert cx.size(0) == cy.size(0)
+
+					lx.append(cx)
+					ly.append(cy)
+					max_len = max(max_len, cx.size(0))
+				
+				for i in range(batch_count):
+					lx[i] = enlarge_to_fit(lx[i], max_len, eos_token_id)
+					ly[i] = enlarge_to_fit(ly[i], max_len, -1)
+				
+				x = torch.stack(lx).long()
+				y = torch.stack(ly).long()
 
 		_, loss = model(x, y)
 

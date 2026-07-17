@@ -17,11 +17,11 @@ shared/
   util.py       Common utility functions
   format.py     File/data format helpers
 
-trainer.py      Pre-training entry point
-sft_trainer.py  Supervised fine-tuning entry point
+trainer.py      Pre-training, Supervised fine-tuning
 inference.py    Inference/testing entry point
+convert_hf.py   Convert compatible models to the checkpoint.
 
-options.toml    Shared configuration file
+options.toml    Example configuration file
 
 scripts/
   collector_shot/  Conversation generation tool
@@ -34,7 +34,7 @@ scripts/
 Examples
 ```bash
 python inference.py \
-  --config ../shark-gen/options.toml \
+  --config options.toml \
   --max-new-tokens 100 --temperature 0.8 --top-k 50
 
 python convert_hf.py \
@@ -42,9 +42,9 @@ python convert_hf.py \
   --source HuggingFaceTB/SmolLM2-360M-Instruct \
   --output checkpoints/smollm2-instruct.pt
 
-python trainer.py --config ../shark-gen/options.toml
+python trainer.py --config options.toml
 
-python server.py --config ../shark-gen/options.toml
+python server.py --config options.toml
 ```
 
 

@@ -348,10 +348,16 @@ class JsonlDataset:
 				)
 			
 			if mask and not message.content.strip():
-				raise ValueError("assistant message cannot be empty")
+				raise ValueError(
+					"assistant message cannot be empty"
+					f"conversation: {conversation}"
+					)
 		
 		if not any(train_mask):
-			raise ValueError("conversation contains no assistant targets")
+			raise ValueError(
+				f"conversation contains no assistant targets"
+				f"conversation: {conversation}"
+			)
 		
 		targets = [
 			token_id if should_train else ignore_index

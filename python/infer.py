@@ -122,7 +122,7 @@ def main() -> None:
 		
 		reply = shared.format.idx_text(tokenizer, output, idx.shape[1])
 
-		print(reply)
+		print(f"AI: {reply}")
 
 		history.append({
 			"role": "assistant",

@@ -1,30 +1,39 @@
 [model]
-# A! `vocab` should be roughly the same as the tokenizer used by trainer.py, if you are unsure about it, please leave it `0` and the trainer.py will use the same from tokenizer. focus on configuring the tokenizer instead.
+# `vocab` should be roughly the same as the tokenizer used by trainer.py, if you are unsure about it, please leave it `0` and the trainer.py will use the same from tokenizer. focus on configuring the tokenizer instead.
 vocab = 0
-layer = 8
-chan = 512
-q_head = 8
-kv_head = 4
-mlp_mul = 4
-bias = false # Hmm~ not recommended unless you want to load a compatible model, you have to modify `model.py`. *Actually it's ignored so far*
+layer = 32
+chan = 960
+q_head = 15
+kv_head = 5
+mlp_mul = 2560
+bias = false # not recommended unless you want to load a compatible model, you have to modify `model.py`. *Actually it's ignored so far*
 drop = 0.0 # float. for pretraining 0 is good, for finetuning try 0.1+
 eps = 1e-5
+rope_theta = 100000
+
+[infer]
+system_prompt = """..."""
 
 [train]
-init_from = "scratch"
-tokenizer_path = "XXX" # repo id from Hugging face or path to the model model directory where contains special_tokens_map.json, tokenizer.json, tokenizer_config.json
-working_directory = "./model/mtiny_model" # The path **directly** stores the current model, be aware!
+# init_from = "scratch"
+tokenizer_path = "/home/menv/..."
+working_directory = "/home/menv/..."
+# The path directly stores the current model, be aware!
 
-max_steps = 2000
+max_steps = 3000
 log_interval = 1
 save_interval = 20
 
-dataset_train = "../corpus/cus0/train.bin"
-dataset_validation = "../corpus/cus0/val.bin"
-corpus_block_size = 64
-corpus_batch_size = 4
+dataset_type = 1
+# 0 - CORPUS; 1 - SFT
+dataset_sft_train = "/home/menv/..."
+dataset_train = "/home/menv/..."
+dataset_validation = "/home/menv/..."
+corpus_block_size = 512
+corpus_batch_size = 32
 
-optimizer_learning_rate = 6e-4
+# optimizer_learning_rate = 6e-4 # Pre-train
+optimizer_learning_rate = 5e-5 # SFT
 
 adamw_weight_decay = 1e-1
 adamw_beta1 = 0.9
