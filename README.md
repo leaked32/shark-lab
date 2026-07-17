@@ -48,3 +48,8 @@ python server.py --config options.toml
 ```
 
 
+```bash
+cmake --preset linux-x64-debug
+cmake --build build/linux-x64-debug
+./build/linux-x64-debug/example-app
+```

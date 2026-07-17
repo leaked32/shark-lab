@@ -5,6 +5,12 @@ __pycache__/
 venv/
 .env
 
+# CPP
+
+cpp/build/
+cpp/CMakePresets.json
+cpp/.cache/
+
 # Data
 datasets/
 data/
