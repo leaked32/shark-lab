@@ -530,11 +530,9 @@ def main() -> None:
 	device, dtype = shared.util.resolve_runtime(
 		meta_opt["system"], args.device, args.dtype
 	)
-
-	tokenizer_path = meta_opt["train"]["tokenizer_path"]
-	tokenizer = Tokenizer.from_file(
-		os.path.join(tokenizer_path, "tokenizer.json")
-	)
+	
+	tokenizer, eos_token_id = shared.format.get_tokenizer(
+		meta_opt["train"]["tokenizer_path"])
 
 	opt = shared.format.trainer_options(meta_opt['model'], meta_opt['train'])
 	checkpoint_path = args.ckpt or os.path.join(

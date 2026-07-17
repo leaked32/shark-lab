@@ -1,9 +1,12 @@
 import os
 
 import argparse
-import torch
 import shared.format
-from shared.util import get_batch
+from shared.util import get_batch, JsonlDataset, JsonlMessage
+
+from tokenizers import Tokenizer
+import torch
+from torch import Tensor
 
 
 def main():
@@ -26,6 +29,10 @@ def main():
 	
 	# Trainer
 	opt = shared.format.trainer_options(meta_opt['model'], meta_opt['train'])
+	tokenizer_path = opt.train["tokenizer_path"]
+	
+	tokenizer, eos_token_id = shared.format.get_tokenizer(
+		opt.train["tokenizer_path"])
 	
 	model_path: str = opt.train['working_directory']
 	os.makedirs(model_path, exist_ok=True)

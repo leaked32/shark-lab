@@ -1,6 +1,14 @@
+"""
+shark-lab
+shared/util.py
+
+This module collects discrete shared functions
+"""
+
 from typing import Any
 
 import torch
+
 import numpy as np
 from torch import Tensor as Tensor
 
@@ -54,22 +62,3 @@ def resolve_runtime(
 		raise RuntimeError("CUDA was requested but is unavailable")
 
 	return device, dtypes[dtype_name]
-
-
-
-
-"""
-
-		
-		ids = tokenizer.encode(
-			text,
-			add_special_tokens=False,
-		).ids
-
-		idx = torch.tensor(
-			[ids],
-			dtype=torch.long,
-			device=device,
-		)
-		
-"""

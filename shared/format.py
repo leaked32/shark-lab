@@ -1,8 +1,16 @@
+"""
+shark-lab
+shared/format.py
+
+This little module adapts shark-lab to different purposes
+"""
+
 from __future__ import annotations
 
 import os
 import tempfile
 import tomllib
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -170,7 +178,7 @@ def load_meta_dataset(path: str) -> dict[str, Any]:
 
 def format_chat(
 	messages: list[dict[str, str]],
-	system_propmt: str,
+	system_prompt: str,
 	add_generation_prompt: bool = True,
 ) -> str:
 	if not messages:
@@ -189,7 +197,7 @@ def format_chat(
 	if messages[0]["role"] != "system":
 		formatted.append(
 			f"<|im_start|>system\n"
-			f"{system_propmt}"
+			f"{system_prompt}"
 			f"<|im_end|>\n"
 		)
 
@@ -205,13 +213,15 @@ def format_chat(
 
 	return "".join(formatted)
 
-def text_idx(tokenizer, text: str, device) -> Tensor:
-
+def text_ids(tokenizer, text: str) -> list[int]:
 	ids = tokenizer.encode(
 		text,
 		add_special_tokens=False,
 	).ids
+	return ids
 
+def text_idx(tokenizer, text: str, device) -> Tensor:
+	ids = text_ids(tokenizer, text)
 	idx = torch.tensor(
 		[ids],
 		dtype=torch.long,
@@ -235,3 +245,129 @@ def idx_text(tokenizer, output, begin) -> str:
 	)
 	
 	return reply
+
+
+def get_tokenizer(tokenizer_path: str) -> tuple[Tokenizer, int]:
+	# tokenizer_path = meta_opt["train"]["tokenizer_path"]
+	# tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+	
+	tokenizer = Tokenizer.from_file(
+		os.path.join(tokenizer_path, "tokenizer.json")
+	)
+	eos_token_id = tokenizer.token_to_id("<|im_end|>")
+
+	if eos_token_id is None:
+		raise ValueError("tokenizer has no <|im_end|> token")
+	
+	return tokenizer, eos_token_id
+
+# =================================================================================================
+# JSONL CONVESATION DATASET
+# =================================================================================================
+
+import shared.format
+
+@dataclass
+class JsonlMessage:
+	role: str
+	content: str
+
+class JsonlDataset:
+
+	def __init__(self, path: str | Path):
+		self.path = path if isinstance(path, Path) else Path(path)
+		self.items: list[list[JsonlMessage]] = []
+		
+		self._load()
+	
+	def _load(self) -> None:
+		with self.path.open("r", encoding="utf-8") as f:
+			for line_no, raw in enumerate(f, start=1):
+				conversation: list[JsonlMessage] = []
+				line = raw.strip()
+				if not line:
+					continue
+				try:
+					obj = json.loads(line)
+				except json.JSONDecodeError as exc:
+					raise ValueError(f"{self.path}:{line_no}: invalid JSON") from exc
+				if not isinstance(obj, dict):
+					raise ValueError(f"{self.path}:{line_no}: root must be object")
+				
+				if obj["messages"]:
+					for i in obj["messages"]:
+						conversation.append(JsonlMessage(i["role"], i["content"]))
+				self.items.append(conversation)
+	
+	def to_sft_tensors(self, tokenizer: Tokenizer, ignore_index: int, conversation_index: int,
+					) -> tuple[Tensor, Tensor]:
+		# Python masking
+		token_ids: list[int] = []
+		train_mask: list[bool] = []
+		
+		conversation = self.items[conversation_index]
+		
+		for message in conversation:
+			mask = message.role == 'assistant'
+			prefix = f"<|im_start|>{message.role}\n"
+			content = message.content
+			suffix = "<|im_end|>"
+			
+			prefix_ids = shared.format.text_ids(tokenizer, prefix)
+			token_ids.extend(prefix_ids)
+			train_mask.extend([False] * len(prefix_ids))
+			
+			content_ids = shared.format.text_ids(tokenizer, content)
+			token_ids.extend(content_ids)
+			train_mask.extend([mask] * len(content_ids))
+			
+			suffix_ids = shared.format.text_ids(tokenizer, suffix)
+			token_ids.extend(suffix_ids)
+			train_mask.extend([mask] * len(suffix_ids))
+			
+			newline_ids = shared.format.text_ids(tokenizer, "\n")
+			token_ids.extend(newline_ids)
+			train_mask.extend([False] * len(newline_ids))
+			
+			whole = (
+				f"<|im_start|>{message.role}\n"
+				f"{message.content}"
+				f"<|im_end|>\n"
+			)
+			whole_ids = shared.format.text_ids(tokenizer, whole)
+			
+			merged = prefix_ids + content_ids + suffix_ids + newline_ids
+			if whole_ids != merged:
+				raise ValueError(
+					"separate chat segments tokenize differently from the complete message"
+				)
+			
+			if mask and not message.content.strip():
+				raise ValueError("assistant message cannot be empty")
+		
+		if not any(train_mask):
+			raise ValueError("conversation contains no assistant targets")
+		
+		targets = [
+			token_id if should_train else ignore_index
+			for token_id, should_train in zip(token_ids[1:], train_mask[1:])
+		]
+		
+		input_ids = torch.tensor(token_ids[:-1], dtype=torch.long)
+		targets = torch.tensor(targets, dtype=torch.long)
+		return input_ids, targets
+"""
+
+		
+		ids = tokenizer.encode(
+			text,
+			add_special_tokens=False,
+		).ids
+
+		idx = torch.tensor(
+			[ids],
+			dtype=torch.long,
+			device=device,
+		)
+		
+"""

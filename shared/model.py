@@ -1,6 +1,8 @@
 """
 shark-lab
 shared/model.py
+
+The module defines the model architecture
 """
 
 import math
@@ -150,21 +152,20 @@ class KVCache0:
 	
 class KVCache1:
 	"""	Implemented as slot KV Cache
+		slot-based KV cache preallocates a larger tensor than the actual sequences currently need.
+		this Tensor is used to determine what current writing position is.
+		That said, in KV Cache, this represents the positions of true position of K and V.
+		RoPE requires the current positions
+		Right now every layer has its own lengths tensor,
+		but the sequence length of a request is identical across all transformer layers.
+		NOTE all seq in one batch shares the same capacity since the storage is still
+		contiguous.
 	"""
 	def __init__(self, max_batch: int):
 		self.k: Tensor | None = None
 		self.v: Tensor | None = None
 		self.max_batch = max_batch
 		self.lengths = torch.zeros(max_batch, dtype=torch.long)
-		""" slot-based KV cache preallocates a larger tensor than the actual sequences currently need.
-			this Tensor is used to determine what current writing position is.
-			That said, in KV Cache, this represents the positions of true position of K and V.
-			RoPE requires the current positions
-			Right now every layer has its own lengths tensor,
-			but the sequence length of a request is identical across all transformer layers.
-			NOTE all seq in one batch shares the same capacity since the storage is still
-			contiguous.
-		"""
 		# self.active = torch.zeros(max_batch, dtype=torch.bool)
 	
 	def clear_slot(self, slot: int):
@@ -343,8 +344,12 @@ class KVCache2:
 				if write_pos >= length:
 					break
 				take = min(self.block_size, length - write_pos)
-				k_dense[row, :, write_pos:write_pos + take, :] = self.k_pool[physical_block, :, :take, :]
-				v_dense[row, :, write_pos:write_pos + take, :] = self.v_pool[physical_block, :, :take, :]
+				k_dense[row, :, write_pos:write_pos + take, :] = (
+					self.k_pool[physical_block, :, :take, :]
+					)
+				v_dense[row, :, write_pos:write_pos + take, :] = (
+					self.v_pool[physical_block, :, :take, :]
+					)
 				write_pos += take
 
 		return k_dense, v_dense, lengths
@@ -755,10 +760,8 @@ class GPT(nn.Module):
 
 			idx = torch.cat((idx, idx_next), dim=1)
 
-			if (
-				eos_token_id is not None
-				and torch.all(idx_next == eos_token_id)
-			):
+			if (eos_token_id is not None and torch.all(idx_next == eos_token_id)):
+				# eos_token_id has already been appended to the result
 				break
 
 		return idx

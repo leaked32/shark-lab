@@ -50,7 +50,10 @@ def main() -> None:
 		torch.manual_seed(args.seed)
 		if device.type == "cuda":
 			torch.cuda.manual_seed_all(args.seed)
-
+	
+	tokenizer, eos_token_id = shared.format.get_tokenizer(
+		meta_opt["train"]["tokenizer_path"])
+	"""
 	tokenizer_path = meta_opt["train"]["tokenizer_path"]
 	# tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 	
@@ -61,6 +64,7 @@ def main() -> None:
 
 	if eos_token_id is None:
 		raise ValueError("tokenizer has no <|im_end|> token")
+	"""
 
 	opt = shared.format.trainer_options(
 		meta_opt["model"],
