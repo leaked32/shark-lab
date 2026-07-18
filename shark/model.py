@@ -19,19 +19,45 @@ from dataclasses import dataclass
 
 @dataclass
 class GPTOption:
-	"""	NOTICE
-		This dataclass should not be changed once the model
-	"""
+	"""Architecture settings stored under [model]."""
+
 	vocab: int
 	layer: int
 	chan: int
 	q_head: int
+	kv_head: int
 	mlp_mul: int
 	drop: float
 	eps: float
-	kv_head: int
-	rope_theta: float# = 10000.0
-	# bias: bool = False # not supported yet
+	rope_theta: float
+	
+	def __post_init__(self) -> None:
+		if self.vocab < 0:
+			raise ValueError("model.vocab must be >= 0")
+		if self.layer <= 0:
+			raise ValueError("model.layer must be > 0")
+		if self.chan <= 0:
+			raise ValueError("model.chan must be > 0")
+		if self.q_head <= 0:
+			raise ValueError("model.q_head must be > 0")
+		if self.kv_head <= 0:
+			raise ValueError("model.kv_head must be > 0")
+		if self.q_head % self.kv_head != 0:
+			raise ValueError(
+				"model.q_head must be divisible by model.kv_head"
+			)
+		if self.chan % self.q_head != 0:
+			raise ValueError(
+				"model.chan must be divisible by model.q_head"
+			)
+		if self.mlp_mul <= 0:
+			raise ValueError("model.mlp_mul must be > 0")
+		if not 0.0 <= self.drop < 1.0:
+			raise ValueError("model.drop must satisfy 0 <= drop < 1")
+		if self.eps <= 0.0:
+			raise ValueError("model.eps must be > 0")
+		if self.rope_theta <= 0.0:
+			raise ValueError("model.rope_theta must be > 0")
 	
 class RoPE():
 	"""

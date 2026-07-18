@@ -25,46 +25,269 @@ from tokenizers import Tokenizer
 
 import shark.util
 
-@dataclass
+@dataclass(frozen=True, slots=True)
+class GeneralOption:
+	"""Inference settings stored under [infer]."""
+	system_prompt: str
+
+	tokenizer_path: Path
+	working_directory: Path
+
+
+@dataclass(frozen=True, slots=True)
+class TrainOption:
+	"""Training settings stored under [train]."""
+
+	max_steps: int
+	log_interval: int
+	save_interval: int
+
+	dataset_type: int
+	batch_count: int
+
+	dataset_sft_train: Path
+	dataset_train: Path
+	dataset_validation: Path
+	corpus_block_size: int
+
+	optimizer_learning_rate: float
+	adamw_weight_decay: float
+	adamw_beta1: float
+	adamw_beta2: float
+
+	def __post_init__(self) -> None:
+		if self.max_steps <= 0:
+			raise ValueError("train.max_steps must be > 0")
+		if self.log_interval <= 0:
+			raise ValueError("train.log_interval must be > 0")
+		if self.save_interval <= 0:
+			raise ValueError("train.save_interval must be > 0")
+		if self.dataset_type not in (0, 1):
+			raise ValueError(
+				"train.dataset_type must be 0 (CORPUS) or 1 (SFT)"
+			)
+		if self.batch_count <= 0:
+			raise ValueError("train.batch_count must be > 0")
+		if self.corpus_block_size <= 0:
+			raise ValueError("train.corpus_block_size must be > 0")
+		if self.optimizer_learning_rate <= 0.0:
+			raise ValueError(
+				"train.optimizer_learning_rate must be > 0"
+			)
+		if self.adamw_weight_decay < 0.0:
+			raise ValueError(
+				"train.adamw_weight_decay must be >= 0"
+			)
+		if not 0.0 <= self.adamw_beta1 < 1.0:
+			raise ValueError(
+				"train.adamw_beta1 must satisfy 0 <= beta1 < 1"
+			)
+		if not 0.0 <= self.adamw_beta2 < 1.0:
+			raise ValueError(
+				"train.adamw_beta2 must satisfy 0 <= beta2 < 1"
+			)
+
+@dataclass(frozen=True, slots=True)
+class SystemOption:
+	"""Runtime settings stored under [system]."""
+
+	device: str
+	dtype: str
+
+	def __post_init__(self) -> None:
+		allowed_dtypes = {
+			"float32",
+			"float16",
+			"bfloat16",
+		}
+
+		if self.dtype not in allowed_dtypes:
+			raise ValueError(
+				f"system.dtype must be one of {sorted(allowed_dtypes)}, "
+				f"got {self.dtype!r}"
+			)
+
+
+@dataclass(frozen=True, slots=True)
 class trainer_options:
-	model: dict[str, Any]
-	train: dict[str, Any]
+	"""Complete configuration."""
+
+	model: GPTOption
+	general: GeneralOption
+	train: TrainOption
+	system: SystemOption
+
+def require_section(
+	config: dict[str, Any],
+	name: str,
+) -> dict[str, Any]:
+	section = config.get(name)
+
+	if not isinstance(section, dict):
+		raise ValueError(f"Missing or invalid [{name}] section")
+
+	return section
+
+
+def reject_unknown_fields(
+	section_name: str,
+	data: dict[str, Any],
+	allowed_fields: set[str],
+) -> None:
+	unknown_fields = set(data) - allowed_fields
+
+	if unknown_fields:
+		names = ", ".join(sorted(unknown_fields))
+		raise ValueError(
+			f"Unknown field(s) in [{section_name}]: {names}"
+		)
+
+
+def load_trainer_options(path: str | Path) -> trainer_options:
+	config_path = Path(path)
+
+	with config_path.open("rb") as file:
+		raw = tomllib.load(file)
+
+	model_raw = require_section(raw, "model")
+	general_raw = require_section(raw, "general")
+	train_raw = require_section(raw, "train")
+	system_raw = require_section(raw, "system")
+
+	reject_unknown_fields(
+		"model",
+		model_raw,
+		{
+			"vocab",
+			"layer",
+			"chan",
+			"q_head",
+			"kv_head",
+			"mlp_mul",
+			"drop",
+			"eps",
+			"rope_theta",
+			"bias",
+		},
+	)
+
+	reject_unknown_fields(
+		"general",
+		general_raw,
+		{
+			"system_prompt",
+			"tokenizer_path",
+			"working_directory",
+		},
+	)
+
+	reject_unknown_fields(
+		"train",
+		train_raw,
+		{
+			"max_steps",
+			"log_interval",
+			"save_interval",
+			"dataset_type",
+			"batch_count",
+			"dataset_sft_train",
+			"dataset_train",
+			"dataset_validation",
+			"corpus_block_size",
+			"optimizer_learning_rate",
+			"adamw_weight_decay",
+			"adamw_beta1",
+			"adamw_beta2",
+		},
+	)
+
+	reject_unknown_fields(
+		"system",
+		system_raw,
+		{"device", "dtype"},
+	)
+
+	# `bias` is accepted in the TOML for compatibility but deliberately
+	# not passed to GPTOption because the model does not support it yet.
+	bias = model_raw.get("bias", False)
+	if bias is not False:
+		raise ValueError(
+			"model.bias=true is unsupported by the current model"
+		)
+
+	model = GPTOption(
+		vocab=int(model_raw["vocab"]),
+		layer=int(model_raw["layer"]),
+		chan=int(model_raw["chan"]),
+		q_head=int(model_raw["q_head"]),
+		kv_head=int(model_raw["kv_head"]),
+		mlp_mul=int(model_raw["mlp_mul"]),
+		drop=float(model_raw["drop"]),
+		eps=float(model_raw["eps"]),
+		rope_theta=float(model_raw["rope_theta"]),
+	)
+
+	general = GeneralOption(
+		system_prompt=str(general_raw["system_prompt"]),
+		tokenizer_path=Path(general_raw["tokenizer_path"]),
+		working_directory=Path(general_raw["working_directory"]),
+	)
+
+	train = TrainOption(
+		max_steps=int(train_raw["max_steps"]),
+		log_interval=int(train_raw["log_interval"]),
+		save_interval=int(train_raw["save_interval"]),
+		dataset_type=int(train_raw["dataset_type"]),
+		batch_count=int(train_raw["batch_count"]),
+		dataset_sft_train=Path(train_raw["dataset_sft_train"]),
+		dataset_train=Path(train_raw["dataset_train"]),
+		dataset_validation=Path(train_raw["dataset_validation"]),
+		corpus_block_size=int(train_raw["corpus_block_size"]),
+		optimizer_learning_rate=float(
+			train_raw["optimizer_learning_rate"]
+		),
+		adamw_weight_decay=float(
+			train_raw["adamw_weight_decay"]
+		),
+		adamw_beta1=float(train_raw["adamw_beta1"]),
+		adamw_beta2=float(train_raw["adamw_beta2"]),
+	)
+
+	system = SystemOption(
+		device=str(system_raw["device"]),
+		dtype=str(system_raw["dtype"]),
+	)
+
+	return trainer_options(
+		model=model,
+		general=general,
+		train=train,
+		system=system,
+	)
 
 def model_from_scratch(opt: trainer_options) -> GPT:
-	def get_tokenizer_vocab_count(tokenizer_path: str) -> int:
+	def get_tokenizer_vocab_count(tokenizer_path: str | Path) -> int:
 		tokenizer = Tokenizer.from_file(
 			os.path.join(tokenizer_path, "tokenizer.json")
 		)
 
 		return tokenizer.get_vocab_size(with_added_tokens=True)
-	vocab_size = get_tokenizer_vocab_count(opt.train["tokenizer_path"])
+	vocab_size = get_tokenizer_vocab_count(opt.general.tokenizer_path)
 
 	# Copy it instead of mutating the TOML dictionary.
-	model_opt = dict(opt.model)
 
-	configured_vocab = int(model_opt.get("vocab", 0))
+	configured_vocab = opt.model.vocab
 
 	if configured_vocab == 0:
-		model_opt["vocab"] = vocab_size
+		opt.model.vocab = vocab_size
 	elif configured_vocab != vocab_size:
 		raise ValueError(
 			"model vocabulary does not match tokenizer: "
 			f"model={configured_vocab}, tokenizer={vocab_size}"
 		)
 
-	model_args = GPTOption(
-		vocab=model_opt["vocab"],
-		chan=model_opt["chan"],
-		drop=model_opt["drop"],
-		eps=model_opt["eps"],
-		q_head=model_opt["q_head"],
-		kv_head=model_opt["kv_head"],
-		layer=model_opt["layer"],
-		mlp_mul=model_opt["mlp_mul"],
-		rope_theta=model_opt["rope_theta"],
-	)
 
-	return GPT(model_args)
+	return GPT(opt.model)
 
 
 def _atomic_torch_save(data: dict[str, Any], path: str) -> None:
@@ -172,10 +395,6 @@ def load_training_checkpoint(
 	return next_step
 
 
-def load_meta_dataset(path: str) -> dict[str, Any]:
-	with open(path, "rb") as file:
-		return tomllib.load(file)
-
 
 # =================================================================================================
 # TOKENIZER
@@ -252,7 +471,7 @@ def idx_text(tokenizer, output, begin) -> str:
 	return reply
 
 
-def get_tokenizer(tokenizer_path: str) -> tuple[Tokenizer, int]:
+def get_tokenizer(tokenizer_path: str | Path) -> tuple[Tokenizer, int]:
 	# tokenizer_path = meta_opt["train"]["tokenizer_path"]
 	# tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 	
@@ -365,18 +584,63 @@ class JsonlDataset:
 		input_ids = torch.tensor(token_ids[:-1], dtype=torch.long)
 		targets = torch.tensor(targets, dtype=torch.long)
 		return input_ids, targets
-"""
-
+	
+	
+	def validate_sft_indices(self, tokenizer) -> tuple[list[int], list[int]]:
+		"""
+		Check every SFT record once and return the indices that can be converted.
+		This avoids infinite loops when some or all dataset records are invalid.
 		
-		ids = tokenizer.encode(
-			text,
-			add_special_tokens=False,
-		).ids
+		The function returns the **valid indecies** and **the invalid**
+		"""
+		valid_indices: list[int] = []
+		invalid_indices: list[int] = []
+		item_count = len(self.items)
 
-		idx = torch.tensor(
-			[ids],
-			dtype=torch.long,
-			device=device,
+		if item_count == 0:
+			raise RuntimeError("The SFT dataset is empty.")
+
+		print(f"Validating {item_count} SFT records...")
+
+		for cindex in range(item_count):
+			try:
+				cx, cy = self.to_sft_tensors(tokenizer, -1, cindex)
+
+				if cx.ndim != 1 or cy.ndim != 1:
+					raise ValueError(
+						f"Expected one-dimensional tensors, got "
+						f"x.ndim={cx.ndim}, y.ndim={cy.ndim}"
+					)
+
+				if cx.size(0) != cy.size(0):
+					raise ValueError(
+						f"Input and target lengths differ: "
+						f"{cx.size(0)} != {cy.size(0)}"
+					)
+
+				if cx.numel() == 0:
+					raise ValueError("The converted sample is empty.")
+
+			except Exception as exc:
+				print(
+					f"Skipping invalid SFT record "
+					f"index={cindex}: {type(exc).__name__}: {exc}"
+				)
+				invalid_indices.append(cindex)
+				continue
+
+			valid_indices.append(cindex)
+
+		if not valid_indices:
+			raise RuntimeError("The SFT dataset contains no valid training records.")
+
+		skipped_count = item_count - len(valid_indices)
+
+		print(
+			f"SFT validation complete: "
+			f"{len(valid_indices)} valid, "
+			f"{skipped_count} skipped."
 		)
-		
-"""
+
+		return valid_indices, invalid_indices
+

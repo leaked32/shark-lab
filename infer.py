@@ -43,8 +43,8 @@ def main() -> None:
 	)
 	args = parser.parse_args()
 
-	meta_opt = shark.format.load_meta_dataset(args.config)
-	device, dtype = shark.util.resolve_runtime(meta_opt["system"], args.device, args.dtype)
+	opt = shark.format.load_trainer_options(args.config)
+	device, dtype = shark.util.resolve_runtime(opt.system, args.device, args.dtype)
 
 	if args.seed is not None:
 		torch.manual_seed(args.seed)
@@ -52,28 +52,12 @@ def main() -> None:
 			torch.cuda.manual_seed_all(args.seed)
 	
 	tokenizer, eos_token_id = shark.format.get_tokenizer(
-		meta_opt["train"]["tokenizer_path"])
-	"""
-	tokenizer_path = meta_opt["train"]["tokenizer_path"]
-	# tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+		opt.general.tokenizer_path)
 	
-	tokenizer = Tokenizer.from_file(
-		os.path.join(tokenizer_path, "tokenizer.json")
-	)
-	eos_token_id = tokenizer.token_to_id("<|im_end|>")
-
-	if eos_token_id is None:
-		raise ValueError("tokenizer has no <|im_end|> token")
-	"""
-
-	opt = shark.format.trainer_options(
-		meta_opt["model"],
-		meta_opt["train"],
-	)
-	system_prompt = meta_opt["infer"]["system_prompt"]
+	system_prompt = opt.general.system_prompt
 
 	checkpoint_path = args.ckpt or os.path.join(
-		opt.train["working_directory"],
+		opt.general.working_directory,
 		"ckpt.pt",
 	)
 

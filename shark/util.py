@@ -6,6 +6,7 @@ This module collects discrete shared functions
 """
 
 from typing import Any
+from pathlib import Path
 
 import torch
 
@@ -21,7 +22,7 @@ def notify_confirm(msg: str):
 		raise InterruptedError('manual exited')
 		
 
-def get_batch(path: str, block_size: int = 256, batch_size: int = 16) -> tuple[Tensor, Tensor]:
+def get_batch(path: str | Path, block_size: int = 256, batch_size: int = 16) -> tuple[Tensor, Tensor]:
 	data = np.memmap(path, dtype=np.uint16, mode='r')
 
 	ix = np.random.randint(0, len(data) - block_size - 1, size=batch_size)
@@ -40,12 +41,12 @@ def get_batch(path: str, block_size: int = 256, batch_size: int = 16) -> tuple[T
 
 
 def resolve_runtime(
-	system_opt: dict[str, Any],
+	system_opt,
 	device_override: str | None = None,
 	dtype_override: str | None = None,
 ) -> tuple[torch.device, torch.dtype]:
-	dtype_name = dtype_override or system_opt.get("dtype", "float32")
-	device_name = device_override or system_opt.get("device", "cpu")
+	dtype_name = dtype_override or system_opt.dtype
+	device_name = device_override or system_opt.device
 
 	dtypes = {
 		"float32": torch.float32,
@@ -62,3 +63,19 @@ def resolve_runtime(
 		raise RuntimeError("CUDA was requested but is unavailable")
 
 	return device, dtypes[dtype_name]
+
+
+def enlarge_to_fit(x: Tensor, least_len: int, fill_value: int) -> Tensor:
+	"""Pad a one-dimensional tensor to at least least_len."""
+	raw_len = x.size(0)
+
+	if raw_len >= least_len:
+		return x
+
+	padding = x.new_full(
+		(least_len - raw_len,),
+		fill_value,
+	)
+
+	return torch.cat((x, padding), dim=0)
+

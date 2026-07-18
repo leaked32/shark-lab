@@ -228,13 +228,13 @@ def save_dataset(name_prefix: str, obj):
 		os.fsync(f.fileno())
 
 def save_failed(name_prefix: str, entry, obj):
-	with open(f'{name_prefix}-failed.jsonl', "a", encoding="utf-8") as f:
+	with open(f'.log/{name_prefix}-failed.jsonl', "a", encoding="utf-8") as f:
 		f.write(json.dumps({"entry": entry, "raw": obj}, ensure_ascii=False) + "\n")
 		f.flush()
 		os.fsync(f.fileno())
 		
 def log_debug(name_prefix: str, entry):
-	with open(f'{name_prefix}-log.jsonl', "a", encoding="utf-8") as f:
+	with open(f'.log/{name_prefix}-log.jsonl', "a", encoding="utf-8") as f:
 		f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 		f.flush()
 		os.fsync(f.fileno())

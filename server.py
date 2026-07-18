@@ -18,9 +18,9 @@ import tkinter.ttk as ttk
 import torch
 from torch import Tensor
 
-import shared.model
-import shared.format
-import shared.util
+import shark.model
+import shark.format
+import shark.util
 
 
 # from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -94,8 +94,8 @@ class GenerationEngine:
 
 		self.requests: dict[int, GenerateRequest] = {}
 		self.slots = SlotManager(max_batch)
-		self.state = shared.model.DecoderState(
-			[shared.model.KVCache1(max_batch) for _ in range(model.opt.layer)]
+		self.state = shark.model.DecoderState(
+			[shark.model.KVCache1(max_batch) for _ in range(model.opt.layer)]
 		)
 
 	def add(self, input_ids: Tensor, max_new_tokens: int):
@@ -277,7 +277,7 @@ def decode_tokens(tokenizer: Any, tokens: torch.Tensor) -> str:
 	return tokenizer.decode(ids, skip_special_tokens=False)
 """
 
-def demon_ui(engine: GenerationEngine, tokenizer: Tokenizer):
+def demon_ui(opt: shark.format.trainer_options, engine: GenerationEngine, tokenizer: Tokenizer):
 	root = tkinter.Tk()
 	root.title("LLM Debugger")
 	root.geometry("800x600")
@@ -336,10 +336,10 @@ def demon_ui(engine: GenerationEngine, tokenizer: Tokenizer):
 			input_text.delete(0, tkinter.END)
 
 			try:
-				chat_text = shared.format.format_chat([
+				chat_text = shark.format.format_chat([
 					{"role": "user", "content": prompt}
-				])
-				idx = shared.format.text_idx(
+				], opt.train["system_prompt"])
+				idx = shark.format.text_idx(
 					tokenizer,
 					chat_text,
 					engine.model.get_device(),
@@ -526,15 +526,15 @@ def main() -> None:
 	if args.seed is not None:
 		torch.manual_seed(args.seed)
 
-	meta_opt = shared.format.load_meta_dataset(args.config)
-	device, dtype = shared.util.resolve_runtime(
+	meta_opt = shark.format.load_meta_dataset(args.config)
+	device, dtype = shark.util.resolve_runtime(
 		meta_opt["system"], args.device, args.dtype
 	)
 	
-	tokenizer, eos_token_id = shared.format.get_tokenizer(
+	tokenizer, eos_token_id = shark.format.get_tokenizer(
 		meta_opt["train"]["tokenizer_path"])
 
-	opt = shared.format.trainer_options(meta_opt['model'], meta_opt['train'])
+	opt = shark.format.trainer_options(meta_opt['model'], meta_opt['train'])
 	checkpoint_path = args.ckpt or os.path.join(
 		opt.train["working_directory"],
 		"ckpt.pt",
@@ -542,9 +542,9 @@ def main() -> None:
 
 	# Construct and load on CPU before moving to the inference device.
 	torch.set_default_device("cpu")
-	model = shared.format.model_from_scratch(opt)
+	model = shark.format.model_from_scratch(opt)
 
-	step = shared.format.load_model_checkpoint(
+	step = shark.format.load_model_checkpoint(
 		model,
 		checkpoint_path,
 		map_location="cpu",
@@ -559,7 +559,7 @@ def main() -> None:
 		max_batch=4,
 		stop_strings=("<|im_end|>",)
 	)
-	demon_ui(engine, tokenizer)
+	demon_ui(opt, engine, tokenizer)
 
 if __name__ == '__main__':
 	main()

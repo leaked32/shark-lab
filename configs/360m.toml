@@ -1,5 +1,5 @@
 [model]
-# `vocab` should be roughly the same as the tokenizer used by trainer.py, if you are unsure about it, please leave it `0` and the trainer.py will use the same from tokenizer. focus on configuring the tokenizer instead.
+# `vocab` should be roughly the same as the tokenizer used by trainer.py, if you are unsure about it, please leave it `0` and the trainer.py will use the same from tokenizer. Focus on configuring the tokenizer instead.
 vocab = 0
 layer = 32
 chan = 960
@@ -11,29 +11,30 @@ drop = 0.0 # float. for pretraining 0 is good, for finetuning try 0.1+
 eps = 1e-5
 rope_theta = 100000
 
-[infer]
-system_prompt = """..."""
+[general]
+system_prompt = """
+...
+"""
+tokenizer_path = "/home/..."
+working_directory = "/home/..."
 
 [train]
-# init_from = "scratch"
-tokenizer_path = "/home/menv/..."
-working_directory = "/home/menv/..."
 # The path directly stores the current model, be aware!
 
-max_steps = 3000
+max_steps = 10000
 log_interval = 1
 save_interval = 20
 
 dataset_type = 1
+batch_count = 1
 # 0 - CORPUS; 1 - SFT
-dataset_sft_train = "/home/menv/..."
-dataset_train = "/home/menv/..."
-dataset_validation = "/home/menv/..."
+dataset_sft_train = "/home/..."
+dataset_train = "/home/..."
+dataset_validation = "/home/..."
 corpus_block_size = 512
-corpus_batch_size = 32
 
-# optimizer_learning_rate = 6e-4 # Pre-train
-optimizer_learning_rate = 5e-5 # SFT
+# optimizer_learning_rate = 6e-4
+optimizer_learning_rate = 2e-5
 
 adamw_weight_decay = 1e-1
 adamw_beta1 = 0.9
