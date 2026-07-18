@@ -21,10 +21,11 @@ trainer.py      Pre-training, Supervised fine-tuning
 inference.py    Inference/testing entry point
 convert_hf.py   Convert compatible models to the checkpoint.
 
-options.toml    Example configuration file
+config/
+  360m.toml    Compatible configuration file for SmolLM2-360M-Instruct
 
 scripts/
-  collector_shot/  Conversation generation tool
+  collector.py  Conversation generation tool
   corpus/          Corpus generation utilities
   crawlers/        Local/private crawling tools, not intended for public release
 ```
