@@ -1,6 +1,6 @@
 """
 shark-lab
-shared/format.py
+shark/format.py
 
 This little module adapts shark-lab to different purposes
 """
@@ -19,11 +19,11 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from shared.model import GPT, GPTOption
+from shark.model import GPT, GPTOption
 
 from tokenizers import Tokenizer
 
-import shared.util
+import shark.util
 
 @dataclass
 class trainer_options:
@@ -162,7 +162,7 @@ def load_training_checkpoint(
 		model.load_state_dict(checkpoint["model"], strict=True)
 
 	if "optimizer" not in checkpoint:
-		shared.util.notify_confirm("checkpoint contains no optimizer state")
+		shark.util.notify_confirm("checkpoint contains no optimizer state")
 		next_step = 0
 	else:
 		optimizer.load_state_dict(checkpoint["optimizer"])
@@ -270,8 +270,6 @@ def get_tokenizer(tokenizer_path: str) -> tuple[Tokenizer, int]:
 # JSONL CONVESATION DATASET
 # =================================================================================================
 
-import shared.format
-
 @dataclass
 class JsonlMessage:
 	role: str
@@ -318,19 +316,19 @@ class JsonlDataset:
 			content = message.content
 			suffix = "<|im_end|>"
 			
-			prefix_ids = shared.format.text_ids(tokenizer, prefix)
+			prefix_ids = text_ids(tokenizer, prefix)
 			token_ids.extend(prefix_ids)
 			train_mask.extend([False] * len(prefix_ids))
 			
-			content_ids = shared.format.text_ids(tokenizer, content)
+			content_ids = text_ids(tokenizer, content)
 			token_ids.extend(content_ids)
 			train_mask.extend([mask] * len(content_ids))
 			
-			suffix_ids = shared.format.text_ids(tokenizer, suffix)
+			suffix_ids = text_ids(tokenizer, suffix)
 			token_ids.extend(suffix_ids)
 			train_mask.extend([mask] * len(suffix_ids))
 			
-			newline_ids = shared.format.text_ids(tokenizer, "\n")
+			newline_ids = text_ids(tokenizer, "\n")
 			token_ids.extend(newline_ids)
 			train_mask.extend([False] * len(newline_ids))
 			
@@ -339,7 +337,7 @@ class JsonlDataset:
 				f"{message.content}"
 				f"<|im_end|>\n"
 			)
-			whole_ids = shared.format.text_ids(tokenizer, whole)
+			whole_ids = text_ids(tokenizer, whole)
 			
 			merged = prefix_ids + content_ids + suffix_ids + newline_ids
 			if whole_ids != merged:

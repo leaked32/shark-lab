@@ -13,8 +13,8 @@ from typing import Any
 import torch
 from tokenizers import Tokenizer
 
-import shared.format
-import shared.util
+import shark.format
+import shark.util
 
 """
 
@@ -43,15 +43,15 @@ def main() -> None:
 	)
 	args = parser.parse_args()
 
-	meta_opt = shared.format.load_meta_dataset(args.config)
-	device, dtype = shared.util.resolve_runtime(meta_opt["system"], args.device, args.dtype)
+	meta_opt = shark.format.load_meta_dataset(args.config)
+	device, dtype = shark.util.resolve_runtime(meta_opt["system"], args.device, args.dtype)
 
 	if args.seed is not None:
 		torch.manual_seed(args.seed)
 		if device.type == "cuda":
 			torch.cuda.manual_seed_all(args.seed)
 	
-	tokenizer, eos_token_id = shared.format.get_tokenizer(
+	tokenizer, eos_token_id = shark.format.get_tokenizer(
 		meta_opt["train"]["tokenizer_path"])
 	"""
 	tokenizer_path = meta_opt["train"]["tokenizer_path"]
@@ -66,7 +66,7 @@ def main() -> None:
 		raise ValueError("tokenizer has no <|im_end|> token")
 	"""
 
-	opt = shared.format.trainer_options(
+	opt = shark.format.trainer_options(
 		meta_opt["model"],
 		meta_opt["train"],
 	)
@@ -79,9 +79,9 @@ def main() -> None:
 
 	# Construct and load on CPU before moving to the inference device.
 	torch.set_default_device("cpu")
-	model = shared.format.model_from_scratch(opt)
+	model = shark.format.model_from_scratch(opt)
 
-	step = shared.format.load_model_checkpoint(
+	step = shark.format.load_model_checkpoint(
 		model,
 		checkpoint_path,
 		map_location="cpu",
@@ -107,8 +107,8 @@ def main() -> None:
 				"role": "user",
 				"content": prompt,
 			})
-		text = shared.format.format_chat(history, system_prompt)
-		idx = shared.format.text_idx(tokenizer, text, device)
+		text = shark.format.format_chat(history, system_prompt)
+		idx = shark.format.text_idx(tokenizer, text, device)
 		# idx = encode_prompt(tokenizer, prompt, device)
 
 		with torch.inference_mode():
@@ -120,7 +120,7 @@ def main() -> None:
 				eos_token_id=eos_token_id,
 			)
 		
-		reply = shared.format.idx_text(tokenizer, output, idx.shape[1])
+		reply = shark.format.idx_text(tokenizer, output, idx.shape[1])
 
 		print(f"AI: {reply}")
 

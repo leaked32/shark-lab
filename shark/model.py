@@ -1,6 +1,6 @@
 """
 shark-lab
-shared/model.py
+shark/model.py
 
 The module defines the model architecture
 """

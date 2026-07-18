@@ -1,139 +1,407 @@
-import os
-import time
-
 import argparse
-import shared.format
-from shared.util import get_batch
-
-from tokenizers import Tokenizer
-import torch
-from torch import Tensor
-
+import os
 import random
 from typing import cast
 
+import torch
+from torch import Tensor
 
-def enlarge_to_fit(x: Tensor, least_len: int, mm: int) -> Tensor:
+import shark.format
+from shark.util import get_batch
+
+
+def enlarge_to_fit(x: Tensor, least_len: int, fill_value: int) -> Tensor:
+	"""Pad a one-dimensional tensor to at least least_len."""
 	raw_len = x.size(0)
-	if raw_len < least_len:
-		y = x.new_full((least_len - raw_len,), mm)
-		return torch.cat((x, y), dim=-1)
-	return x
 
-def main():
-	parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint.")
-	parser.add_argument('--config', default='options.toml')
-	args = parser.parse_args()
-	
-	
-	meta_opt = shared.format.load_meta_dataset(args.config)
-	opt_sys = meta_opt['system']
-	
-	torch.set_default_dtype(
-		{'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}
-		[opt_sys['dtype']]
-		)
-	torch.set_default_device(opt_sys['device'])
-	
-	torch.set_num_threads(16)
-	torch.set_num_interop_threads(2)
-	
-	# Trainer
-	opt = shared.format.trainer_options(meta_opt['model'], meta_opt['train'])
-	tokenizer_path = opt.train["tokenizer_path"]
-	tokenizer, eos_token_id = shared.format.get_tokenizer(tokenizer_path)
-	
-	
-	model_path: str = opt.train['working_directory']
-	os.makedirs(model_path, exist_ok=True)
-	
-	model = shared.format.model_from_scratch(opt)
-	if model is None:
-		raise Exception("trainer.cased_model returned None")
+	if raw_len >= least_len:
+		return x
 
-	optimizer = model.optimizer_adamw(
-		opt.train['adamw_weight_decay'],
-		opt.train['optimizer_learning_rate'],
-		(opt.train['adamw_beta1'], opt.train['adamw_beta2']),
-		opt_sys['device']
+	padding = x.new_full(
+		(least_len - raw_len,),
+		fill_value,
 	)
 
-	start_step = 0
+	return torch.cat((x, padding), dim=0)
+
+
+def validate_sft_indices(
+	dataset_context,
+	tokenizer,
+) -> list[int]:
+	"""
+	Check every SFT record once and return the indices that can be converted.
+
+	This avoids infinite loops when some or all dataset records are invalid.
+	"""
+	valid_indices: list[int] = []
+	item_count = len(dataset_context.items)
+
+	if item_count == 0:
+		raise RuntimeError("The SFT dataset is empty.")
+
+	print(f"Validating {item_count} SFT records...")
+
+	for cindex in range(item_count):
+		try:
+			cx, cy = dataset_context.to_sft_tensors(
+				tokenizer,
+				-1,
+				cindex,
+			)
+
+			if cx.ndim != 1 or cy.ndim != 1:
+				raise ValueError(
+					f"Expected one-dimensional tensors, got "
+					f"x.ndim={cx.ndim}, y.ndim={cy.ndim}"
+				)
+
+			if cx.size(0) != cy.size(0):
+				raise ValueError(
+					f"Input and target lengths differ: "
+					f"{cx.size(0)} != {cy.size(0)}"
+				)
+
+			if cx.numel() == 0:
+				raise ValueError("The converted sample is empty.")
+
+		except Exception as exc:
+			print(
+				f"Skipping invalid SFT record "
+				f"index={cindex}: {type(exc).__name__}: {exc}"
+			)
+			continue
+
+		valid_indices.append(cindex)
+
+	if not valid_indices:
+		raise RuntimeError(
+			"The SFT dataset contains no valid training records."
+		)
+
+	skipped_count = item_count - len(valid_indices)
+
+	print(
+		f"SFT validation complete: "
+		f"{len(valid_indices)} valid, "
+		f"{skipped_count} skipped."
+	)
+
+	return valid_indices
+
+
+def make_sft_batch(
+	dataset_context,
+	tokenizer,
+	eos_token_id: int,
+	batch_count: int,
+	valid_indices: list[int],
+	index_queue: list[int],
+) -> tuple[Tensor, Tensor]:
+	"""
+	Create one padded SFT batch.
+
+	If a previously valid record fails during training, it is removed from
+	valid_indices. The function fails cleanly if no usable records remain.
+	"""
+	lx: list[Tensor] = []
+	ly: list[Tensor] = []
+	max_len = 0
+
+	while len(lx) < batch_count:
+		if not valid_indices:
+			raise RuntimeError(
+				"No valid SFT records remain while creating a batch."
+			)
+
+		if not index_queue:
+			index_queue.extend(valid_indices)
+			random.shuffle(index_queue)
+
+		cindex = index_queue.pop()
+
+		try:
+			cx, cy = dataset_context.to_sft_tensors(
+				tokenizer,
+				-1,
+				cindex,
+			)
+
+			if cx.ndim != 1 or cy.ndim != 1:
+				raise ValueError(
+					f"Expected one-dimensional tensors, got "
+					f"x.ndim={cx.ndim}, y.ndim={cy.ndim}"
+				)
+
+			if cx.size(0) != cy.size(0):
+				raise ValueError(
+					f"Input and target lengths differ: "
+					f"{cx.size(0)} != {cy.size(0)}"
+				)
+
+			if cx.numel() == 0:
+				raise ValueError("The converted sample is empty.")
+
+		except Exception as exc:
+			print(
+				f"Removing failed SFT record "
+				f"index={cindex}: {type(exc).__name__}: {exc}"
+			)
+
+			try:
+				valid_indices.remove(cindex)
+			except ValueError:
+				pass
+
+			index_queue[:] = [
+				index
+				for index in index_queue
+				if index != cindex
+			]
+
+			continue
+
+		lx.append(cx)
+		ly.append(cy)
+		max_len = max(max_len, cx.size(0))
+
+	if not lx:
+		raise RuntimeError("Unable to construct a non-empty SFT batch.")
+
+	for i in range(len(lx)):
+		lx[i] = enlarge_to_fit(
+			lx[i],
+			max_len,
+			eos_token_id,
+		)
+		ly[i] = enlarge_to_fit(
+			ly[i],
+			max_len,
+			-1,
+		)
+
+	x = torch.stack(lx, dim=0).long()
+	y = torch.stack(ly, dim=0).long()
+
+	return x, y
+
+
+def main() -> int:
+	parser = argparse.ArgumentParser(
+		description="Train a GPT model from a configured dataset."
+	)
+	parser.add_argument(
+		"--config",
+		default="options.toml",
+		help="Path to the TOML configuration file.",
+	)
+	args = parser.parse_args()
+
+	meta_opt = shark.format.load_meta_dataset(args.config)
+	opt_sys = meta_opt["system"]
+
+	dtype_name = opt_sys["dtype"]
+	dtype_map = {
+		"float32": torch.float32,
+		"bfloat16": torch.bfloat16,
+		"float16": torch.float16,
+	}
+
+	if dtype_name not in dtype_map:
+		raise ValueError(f"Unsupported dtype: {dtype_name!r}")
+
+	torch.set_default_dtype(dtype_map[dtype_name])
+	torch.set_default_device(opt_sys["device"])
+
+	torch.set_num_threads(16)
+	torch.set_num_interop_threads(2)
+
+	opt = shark.format.trainer_options(
+		meta_opt["model"],
+		meta_opt["train"],
+	)
+
+	tokenizer_path = opt.train["tokenizer_path"]
+	tokenizer, eos_token_id = shark.format.get_tokenizer(
+		tokenizer_path
+	)
+
+	model_path: str = opt.train["working_directory"]
+	os.makedirs(model_path, exist_ok=True)
+
+	model = shark.format.model_from_scratch(opt)
+
+	if model is None:
+		raise RuntimeError(
+			"shark.format.model_from_scratch returned None."
+		)
+
+	optimizer = model.optimizer_adamw(
+		opt.train["adamw_weight_decay"],
+		opt.train["optimizer_learning_rate"],
+		(
+			opt.train["adamw_beta1"],
+			opt.train["adamw_beta2"],
+		),
+		opt_sys["device"],
+	)
+
 	ckpt_path = os.path.join(model_path, "ckpt.pt")
+	start_step = 0
 
 	if os.path.exists(ckpt_path):
-		start_step = shared.format.load_training_checkpoint(
+		start_step = shark.format.load_training_checkpoint(
 			ckpt_path,
 			model,
 			optimizer,
 			map_location=opt_sys["device"],
 		)
-	dataset_type: int = opt.train["dataset_type"]
-	batch_count: int = opt.train['corpus_batch_size']
-	
-	match cast(int, dataset_type):
+
+		print(
+			f"Resuming training from step {start_step}."
+		)
+
+	dataset_type: int = cast(int, opt.train["dataset_type"])
+	batch_count = cast(int, opt.train["batch_count"])
+	max_steps = cast(int, opt.train["max_steps"])
+
+	if batch_count <= 0:
+		raise ValueError(
+			f"batch_count must be positive, got {batch_count}."
+		)
+
+	if max_steps < 0:
+		raise ValueError(
+			f"max_steps must not be negative, got {max_steps}."
+		)
+
+	dataset_context = None
+	valid_indices: list[int] = []
+	index_queue: list[int] = []
+
+	match dataset_type:
+		case 0:
+			dataset_train = opt.train["dataset_train"]
+
+			if not os.path.exists(dataset_train):
+				raise FileNotFoundError(
+					f"Training dataset does not exist: "
+					f"{dataset_train}"
+				)
+
 		case 1:
 			jsonl_path: str = opt.train["dataset_sft_train"]
-			print(f"SFT jsonl_path: {jsonl_path}")
-			dataset_context = shared.format.JsonlDataset(jsonl_path)
-			comfy_arange: list[int] = [i for i in range(len(dataset_context.items))]
-			puckered = comfy_arange.copy()
-			random.shuffle(puckered)
-	
-	
-	for step in range(start_step, opt.train['max_steps']):
+
+			if not os.path.exists(jsonl_path):
+				raise FileNotFoundError(
+					f"SFT dataset does not exist: {jsonl_path}"
+				)
+
+			print(f"SFT JSONL path: {jsonl_path}")
+
+			dataset_context = shark.format.JsonlDataset(
+				jsonl_path
+			)
+
+			valid_indices = validate_sft_indices(
+				dataset_context,
+				tokenizer,
+			)
+
+			index_queue = valid_indices.copy()
+			random.shuffle(index_queue)
+
+		case _:
+			raise ValueError(
+				f"Unsupported dataset_type: {dataset_type}"
+			)
+
+	model.train()
+
+	for step in range(start_step, max_steps):
 		x: Tensor
 		y: Tensor
-		match cast(int, dataset_type):
+
+		match dataset_type:
 			case 0:
-				x, y = get_batch(opt.train['dataset_train'],
-					opt.train['corpus_block_size'], batch_count)
+				x, y = get_batch(
+					opt.train["dataset_train"],
+					opt.train["corpus_block_size"],
+					batch_count,
+				)
+
 			case 1:
-				lx: list[Tensor] = []
-				ly: list[Tensor] = []
-				max_len = 0
-
-				for _ in range(batch_count):
-					if not puckered:
-						puckered = comfy_arange.copy()
-						random.shuffle(puckered)
-
-					cindex = puckered.pop()
-					cx, cy = dataset_context.to_sft_tensors(
-						tokenizer,
-						-1,
-						cindex,
+				if dataset_context is None:
+					raise RuntimeError(
+						"SFT dataset was not initialized."
 					)
-					assert cx.size(0) == cy.size(0)
 
-					lx.append(cx)
-					ly.append(cy)
-					max_len = max(max_len, cx.size(0))
-				
-				for i in range(batch_count):
-					lx[i] = enlarge_to_fit(lx[i], max_len, eos_token_id)
-					ly[i] = enlarge_to_fit(ly[i], max_len, -1)
-				
-				x = torch.stack(lx).long()
-				y = torch.stack(ly).long()
+				x, y = make_sft_batch(
+					dataset_context=dataset_context,
+					tokenizer=tokenizer,
+					eos_token_id=eos_token_id,
+					batch_count=batch_count,
+					valid_indices=valid_indices,
+					index_queue=index_queue,
+				)
+
+			case _:
+				raise RuntimeError(
+					f"Unexpected dataset_type: {dataset_type}"
+				)
+
+		optimizer.zero_grad(set_to_none=True)
 
 		_, loss = model(x, y)
 
-		optimizer.zero_grad(set_to_none=True)
+		if not torch.isfinite(loss):
+			raise FloatingPointError(
+				f"Non-finite loss at step {step}: "
+				f"{loss.detach().item()}"
+			)
+
 		loss.backward()
-		
-		torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+		torch.nn.utils.clip_grad_norm_(
+			model.parameters(),
+			max_norm=1.0,
+		)
+
 		optimizer.step()
 
-		if step % opt.train['log_interval'] == 0:
-			print(f"step {step} | loss {loss.item():.4f}")
+		if step % opt.train["log_interval"] == 0:
+			print(
+				f"step {step} | "
+				f"loss {loss.detach().item():.4f}"
+			)
+
 		if (step + 1) % opt.train["save_interval"] == 0:
-			shared.format.save_training_checkpoint(
+			shark.format.save_training_checkpoint(
 				ckpt_path,
 				model,
 				optimizer,
 				next_step=step + 1,
 			)
 
-if __name__ == '__main__':
-	exit(main())
+	if max_steps > start_step:
+		shark.format.save_training_checkpoint(
+			ckpt_path,
+			model,
+			optimizer,
+			next_step=max_steps,
+		)
+
+		print(
+			f"Training complete. Final checkpoint: {ckpt_path}"
+		)
+	else:
+		print(
+			f"No training performed: start_step={start_step}, "
+			f"max_steps={max_steps}."
+		)
+
+	return 0
+
+
+if __name__ == "__main__":
+	raise SystemExit(main())

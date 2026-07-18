@@ -1,6 +1,6 @@
 """
 shark-lab
-shared/util.py
+shark/util.py
 
 This module collects discrete shared functions
 """
