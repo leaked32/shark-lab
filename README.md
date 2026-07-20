@@ -17,8 +17,8 @@ shared/
   util.py       Common utility functions
   format.py     File/data format helpers
 
-trainer.py      Pre-training, Supervised fine-tuning
-inference.py    Inference/testing entry point
+train.py      Pre-training, Supervised fine-tuning
+infer.py    Inference/testing entry point
 convert_hf.py   Convert compatible models to the checkpoint.
 
 config/

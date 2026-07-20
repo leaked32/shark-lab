@@ -41,6 +41,7 @@ class TrainOption:
 	max_steps: int
 	log_interval: int
 	save_interval: int
+	save_independent_checkpoints: bool
 
 	dataset_type: int
 	batch_count: int
@@ -188,6 +189,7 @@ def load_trainer_options(path: str | Path) -> trainer_options:
 			"max_steps",
 			"log_interval",
 			"save_interval",
+			"save_independent_checkpoints",
 			"dataset_type",
 			"batch_count",
 			"dataset_sft_train",
@@ -237,6 +239,7 @@ def load_trainer_options(path: str | Path) -> trainer_options:
 		max_steps=int(train_raw["max_steps"]),
 		log_interval=int(train_raw["log_interval"]),
 		save_interval=int(train_raw["save_interval"]),
+		save_independent_checkpoints=bool(train_raw["save_independent_checkpoints"]),
 		dataset_type=int(train_raw["dataset_type"]),
 		batch_count=int(train_raw["batch_count"]),
 		dataset_sft_train=Path(train_raw["dataset_sft_train"]),
