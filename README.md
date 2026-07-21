@@ -54,3 +54,12 @@ cmake --preset linux-x64-debug
 cmake --build build/linux-x64-debug
 ./build/linux-x64-debug/example-app
 ```
+
+
+```bash
+export PATH=/usr/bin:$PATH
+
+cmake --preset linux-x64-debug
+cmake --build build/linux-x64-debug
+./build/linux-x64-debug/hip-test/hip-test
+```
