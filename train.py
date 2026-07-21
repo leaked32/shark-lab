@@ -99,6 +99,15 @@ def make_sft_batch(
 	return x, y
 
 
+def check_finite(name: str, x: Tensor):
+	if not torch.isfinite(x).all():
+		print(
+			f"BAD TENSOR: {name}",
+			"max=", x.max().item(),
+			"min=", x.min().item(),
+		)
+		raise RuntimeError(f"Non-finite tensor: {name}")
+
 def main() -> int:
 	parser = argparse.ArgumentParser(
 		description="Train a GPT model from a configured dataset."
@@ -128,6 +137,9 @@ def main() -> int:
 
 	torch.set_num_threads(16)
 	torch.set_num_interop_threads(2)
+	torch.backends.cuda.enable_flash_sdp(False)
+	torch.backends.cuda.enable_mem_efficient_sdp(False)
+	torch.backends.cuda.enable_math_sdp(True)
 
 	tokenizer_path = opt.general.tokenizer_path
 	tokenizer, eos_token_id = shark.format.get_tokenizer(
@@ -164,23 +176,17 @@ def main() -> int:
 			map_location=opt.system.device,
 		)
 
-		print(
-			f"Resuming training from step {start_step}."
-		)
+		print(f"Resuming training from step {start_step}.")
 
 	dataset_type: int = cast(int, opt.train.dataset_type)
 	batch_count = cast(int, opt.train.batch_count)
 	max_steps = cast(int, opt.train.max_steps)
 
 	if batch_count <= 0:
-		raise ValueError(
-			f"batch_count must be positive, got {batch_count}."
-		)
+		raise ValueError(f"batch_count must be positive, got {batch_count}.")
 
 	if max_steps < 0:
-		raise ValueError(
-			f"max_steps must not be negative, got {max_steps}."
-		)
+		raise ValueError(f"max_steps must not be negative, got {max_steps}.")
 
 	dataset_context = None
 	valid_indices: list[int] = []
@@ -214,8 +220,8 @@ def main() -> int:
 					"Some data in jsonl cannot be used and will be omitted. "
 					f"invalid_indices {invalid_indices}"
 				)
-			else:
-				shark.util.notify_confirm("All data in jsonl are valid.")
+			# else:
+			# 	shark.util.notify_confirm("All data in jsonl are valid.")
 
 			index_queue = valid_indices.copy()
 			random.shuffle(index_queue)
@@ -270,12 +276,9 @@ def main() -> int:
 			)
 
 		loss.backward()
-
-		torch.nn.utils.clip_grad_norm_(
-			model.parameters(),
-			max_norm=1.0,
-		)
-
+		
+		torch.nn.utils.clip_grad_norm_(model.parameters(),max_norm=1.0,)
+		
 		optimizer.step()
 
 		if step % opt.train.log_interval == 0:
@@ -285,8 +288,9 @@ def main() -> int:
 			)
 
 		if (step + 1) % opt.train.save_interval == 0:
+			ckpt_path1 = os.path.join(opt.general.working_directory, f"ckpt.{step + 1}.pt")
 			shark.format.save_training_checkpoint(
-				ckpt_path,
+				ckpt_path1 if opt.train.save_independent_checkpoints else ckpt_path,
 				model,
 				optimizer,
 				next_step=step + 1,
@@ -300,9 +304,7 @@ def main() -> int:
 			next_step=max_steps,
 		)
 
-		print(
-			f"Training complete. Final checkpoint: {ckpt_path}"
-		)
+		print(f"Training complete. Final checkpoint: {ckpt_path}")
 	else:
 		print(
 			f"No training performed: start_step={start_step}, "

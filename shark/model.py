@@ -547,6 +547,7 @@ class Attention2(nn.Module):
 				Plain math implementation (fallback)
 			"""
 		else:
+			# print("### alternative attention route ###")
 			group_size = self.q_head // self.kv_head
 			q_len = q.size(2)
 			kv_len = k.size(2)

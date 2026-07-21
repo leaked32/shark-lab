@@ -11,6 +11,9 @@ cpp/build/
 cpp/CMakePresets.json
 cpp/.cache/
 
+rocm/CMakePresets.json
+rocm/build/
+
 # Data
 datasets/
 data/
