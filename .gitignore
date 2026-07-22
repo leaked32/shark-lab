@@ -5,14 +5,12 @@ __pycache__/
 venv/
 .env
 
-# CPP
-
-cpp/build/
-cpp/CMakePresets.json
-cpp/.cache/
-
-rocm/CMakePresets.json
-rocm/build/
+# C++ / build systems
+build/
+.cache/
+.sconsgin.dblite
+CMakePresets.json
+compile_commands.json
 
 # Data
 datasets/
@@ -38,7 +36,6 @@ wandb/
 secrets/
 *.secret
 *.key
-.env
 local.toml
 
 # OS / editor

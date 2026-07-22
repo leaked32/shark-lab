@@ -1,0 +1,30 @@
+env = Environment(
+    CXX="hipcc",
+)
+
+Export("env")
+
+VariantDir(
+    "build/hip-test",
+    "hip-test",
+    duplicate=False
+)
+'''
+VariantDir(
+    "build/matrix-test",
+    "matrix-test",
+    duplicate=False
+)
+'''
+SConscript(
+    "build/hip-test/SConscript"
+)
+'''
+SConscript(
+    "build/matrix-test/SConscript"
+)
+'''
+
+# clangd support
+env.Tool("compilation_db")
+env.CompilationDatabase("compile_commands.json")

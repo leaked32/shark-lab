@@ -1,0 +1,26 @@
+import os
+
+env = Environment(
+    CXX="hipcc",
+    CXXFLAGS=[
+        "-std=c++20",
+        "-O2",
+    ],
+)
+
+# tell clangd infer HIP mode from hipcc
+env.Append(
+    CXXFLAGS=[
+        "-x",
+        "hip",
+    ]
+)
+
+env.Tool("compilation_db")
+
+env.Program(
+    target="hip-test",
+    source=[
+        "main.cpp",
+    ],
+)
