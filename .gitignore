@@ -8,9 +8,9 @@ venv/
 # C++ / build systems
 build/
 .cache/
-.sconsgin.dblite
-CMakePresets.json
+.sconsign.dblite
 compile_commands.json
+CMakePresets.json
 
 # Data
 datasets/

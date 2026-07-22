@@ -124,7 +124,7 @@ class INorm(Protocol):
 
 class DecoderState:
 	def __init__(self, kv_cache: list[IKVCache] | None = None,
-			  active_slots: Tensor | None = None):
+			active_slots: Tensor | None = None):
 		self.kv_cache: list[IKVCache] | None = kv_cache
 		self.active_slots: Tensor | None = active_slots
 		"""	The mappings
@@ -444,10 +444,34 @@ class Norm1(nn.Module):
 		super().__init__()
 		self.weight = nn.Parameter(torch.ones(chan))
 		self.eps = eps
+		self.functional_rms_norm = False
 	
 	def forward(self, acts: Tensor) -> Tensor:
-		return F.rms_norm(acts, self.weight.shape, self.weight, self.eps)
+		"""	WARNING
+			By experiments,
+			torch.nn.functional.rms_norm will cause corrupted rms_norm on some ROCm configuration
+		"""
+		if self.functional_rms_norm:
+			return F.rms_norm(acts, self.weight.shape, self.weight, self.eps)
+		else:
+			input_dtype = acts.dtype
 
+			# Compute the normalization statistic in FP32.
+			acts_fp32 = acts.float()
+
+			mean_square = acts_fp32.square().mean(
+				dim=-1,
+				keepdim=True,
+			)
+
+			normalized = acts_fp32 * torch.rsqrt(
+				mean_square + self.eps
+			)
+
+			# Perform scaling in FP32, then restore activation dtype.
+			output = normalized * self.weight.float()
+
+			return output.to(input_dtype)
 
 class Attention2(nn.Module):
 	"""	Implemented as Causal Multi-head Self-Attention

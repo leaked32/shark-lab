@@ -36,7 +36,10 @@ def get_batch(path: str | Path, block_size: int = 256, batch_size: int = 16) -> 
 
 	x = torch.stack(x).long()
 	y = torch.stack(y).long()
-
+	
+	x = x.to(device=torch.get_default_device())
+	y = y.to(device=torch.get_default_device())
+	
 	return x, y
 
 
@@ -79,3 +82,169 @@ def enlarge_to_fit(x: Tensor, least_len: int, fill_value: int) -> Tensor:
 
 	return torch.cat((x, padding), dim=0)
 
+
+def report_tensor(name: str, tensor: Tensor) -> None:
+	value = tensor.detach()
+	
+	finite = torch.isfinite(value)
+	finite_values = value[finite]
+
+	print(
+		f"{name}: "
+		f"shape={tuple(value.shape)} "
+		f"dtype={value.dtype} "
+		f"nan={torch.isnan(value).sum().item()} "
+		f"+inf={torch.isposinf(value).sum().item()} "
+		f"-inf={torch.isneginf(value).sum().item()}",
+		flush=True,
+	)
+
+	if finite_values.numel() > 0:
+		print(
+			f"    finite_min={finite_values.min().item():.8e} "
+			f"finite_max={finite_values.max().item():.8e} "
+			f"finite_abs_max={finite_values.abs().max().item():.8e} "
+			f"finite_mean={finite_values.float().mean().item():.8e}",
+			flush=True,
+		)
+
+def report_largest_gradient_norms(
+	model: torch.nn.Module,
+	*,
+	top_k: int = 10,
+) -> None:
+	results: list[tuple[float, str, float]] = []
+
+	for name, parameter in model.named_parameters():
+		gradient = parameter.grad
+
+		if gradient is None:
+			continue
+
+		grad_fp32 = gradient.detach().float()
+
+		norm = torch.linalg.vector_norm(grad_fp32).item()
+		abs_max = grad_fp32.abs().max().item()
+
+		results.append((norm, name, abs_max))
+
+	results.sort(reverse=True)
+
+	print("Largest parameter gradients:", flush=True)
+
+	for norm, name, abs_max in results[:top_k]:
+		print(
+			f"    {name}: "
+			f"norm={norm:.8e} "
+			f"abs_max={abs_max:.8e}",
+			flush=True,
+		)
+
+def report_nonfinite_gradients(
+	model: torch.nn.Module,
+	*,
+	step: int,
+) -> None:
+	""" Checker should report all bad gradients, not raise at the first parameter in model order
+	"""
+	
+	found = False
+
+	for name, parameter in model.named_parameters():
+		gradient = parameter.grad
+
+		if gradient is None:
+			continue
+
+		nan_count = torch.isnan(gradient).sum().item()
+		posinf_count = torch.isposinf(gradient).sum().item()
+		neginf_count = torch.isneginf(gradient).sum().item()
+
+		if nan_count == 0 and posinf_count == 0 and neginf_count == 0:
+			continue
+
+		found = True
+
+		finite = torch.isfinite(gradient)
+		finite_values = gradient[finite]
+
+		finite_abs_max = (
+			finite_values.abs().max().item()
+			if finite_values.numel() > 0
+			else float("nan")
+		)
+
+		print(
+			f"BAD RAW GRADIENT at step {step}: "
+			f"{name}\n"
+			f"\tshape={tuple(gradient.shape)}\n"
+			f"\tdtype={gradient.dtype}\n"
+			f"\tnan={nan_count}\n"
+			f"\t+inf={posinf_count}\n"
+			f"\t-inf={neginf_count}\n"
+			f"\tfinite_abs_max={finite_abs_max:.8e}",
+			flush=True,
+		)
+
+	if found:
+		raise FloatingPointError(
+			f"Raw backward produced non-finite gradients at step {step}"
+		)
+
+def check_gradients_finite(
+	model: torch.nn.Module,
+	*,
+	step: int,
+) -> None:
+	for name, parameter in model.named_parameters():
+		gradient = parameter.grad
+
+		if gradient is None:
+			continue
+
+		finite = torch.isfinite(gradient)
+
+		if not finite.all():
+			bad = (~finite).sum().item()
+			total = gradient.numel()
+
+			finite_values = gradient[finite]
+			finite_abs_max = (
+				finite_values.abs().max().item()
+				if finite_values.numel() > 0
+				else float("nan")
+			)
+
+			raise FloatingPointError(
+				f"Non-finite gradient after backward at step {step}: "
+				f"{name}, bad={bad}/{total}, "
+				f"largest finite magnitude={finite_abs_max:.8e}"
+			)
+
+
+def check_parameters_finite(
+	model: torch.nn.Module,
+	*,
+	step: int,
+	location: str,
+) -> None:
+	for name, parameter in model.named_parameters():
+		finite = torch.isfinite(parameter)
+
+		if not finite.all():
+			bad = (~finite).sum().item()
+
+			raise FloatingPointError(
+				f"Non-finite parameter {location} at step {step}: "
+				f"{name}, bad={bad}/{parameter.numel()}"
+			)
+
+
+def check_finite(name: str, x: Tensor):
+	if not torch.isfinite(x).all():
+		print(
+			f"BAD TENSOR: {name}",
+			"max=", x.max().item(),
+			"min=", x.min().item(),
+		)
+		raise RuntimeError(f"Non-finite tensor: {name}")

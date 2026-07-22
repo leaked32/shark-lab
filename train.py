@@ -99,61 +99,17 @@ def make_sft_batch(
 	return x, y
 
 
-def check_finite(name: str, x: Tensor):
-	if not torch.isfinite(x).all():
-		print(
-			f"BAD TENSOR: {name}",
-			"max=", x.max().item(),
-			"min=", x.min().item(),
-		)
-		raise RuntimeError(f"Non-finite tensor: {name}")
 
-def main() -> int:
-	parser = argparse.ArgumentParser(
-		description="Train a GPT model from a configured dataset."
-	)
-	parser.add_argument(
-		"--config",
-		default="options.toml",
-		help="Path to the TOML configuration file.",
-	)
-	args = parser.parse_args()
-
-	opt = shark.format.load_trainer_options(args.config)
-	# opt_sys = meta_opt["system"]
-
-	dtype_name = opt.system.dtype
-	dtype_map = {
-		"float32": torch.float32,
-		"bfloat16": torch.bfloat16,
-		"float16": torch.float16,
-	}
-
-	if dtype_name not in dtype_map:
-		raise ValueError(f"Unsupported dtype: {dtype_name!r}")
-
-	torch.set_default_dtype(dtype_map[opt.system.dtype])
-	torch.set_default_device(opt.system.device)
-
-	torch.set_num_threads(16)
-	torch.set_num_interop_threads(2)
-	torch.backends.cuda.enable_flash_sdp(False)
-	torch.backends.cuda.enable_mem_efficient_sdp(False)
-	torch.backends.cuda.enable_math_sdp(True)
-
+def train(opt: shark.format.trainer_options):
 	tokenizer_path = opt.general.tokenizer_path
-	tokenizer, eos_token_id = shark.format.get_tokenizer(
-		tokenizer_path
-	)
+	tokenizer, eos_token_id = shark.format.get_tokenizer(tokenizer_path)
 	
 	os.makedirs(opt.general.working_directory, exist_ok=True)
 
 	model = shark.format.model_from_scratch(opt)
 
 	if model is None:
-		raise RuntimeError(
-			"shark.format.model_from_scratch returned None."
-		)
+		raise RuntimeError("shark.format.model_from_scratch returned None. ")
 
 	optimizer = model.optimizer_adamw(
 		opt.train.adamw_weight_decay,
@@ -206,9 +162,7 @@ def main() -> int:
 			jsonl_path = opt.train.dataset_sft_train
 
 			if not os.path.exists(jsonl_path):
-				raise FileNotFoundError(
-					f"SFT dataset does not exist: {jsonl_path}"
-				)
+				raise FileNotFoundError(f"SFT dataset does not exist: {jsonl_path}")
 
 			print(f"SFT JSONL path: {jsonl_path}")
 
@@ -227,16 +181,25 @@ def main() -> int:
 			random.shuffle(index_queue)
 
 		case _:
-			raise ValueError(
-				f"Unsupported dataset_type: {dataset_type}"
-			)
+			raise ValueError(f"Unsupported dataset_type: {dataset_type}")
 
 	model.train()
-
+	
+	# ============================================================================================
+	# HOOKS
+	# ============================================================================================
+	
+	
+	# ============================================================================================
+	# TRAIN LOOP BEGIN
+	# ============================================================================================
+	
 	for step in range(start_step, max_steps):
+		
+		# CONVERT DATASET TO TENSOR
 		x: Tensor
 		y: Tensor
-
+		
 		match dataset_type:
 			case 0:
 				x, y = shark.util.get_batch(
@@ -264,9 +227,14 @@ def main() -> int:
 				raise RuntimeError(
 					f"Unexpected dataset_type: {dataset_type}"
 				)
-
+		
+		# MODEL
 		optimizer.zero_grad(set_to_none=True)
-
+		# shark.util.check_parameters_finite(model, step=step, location="before forward")
+		
+		# FORWARD PASS
+		print(f"{x.shape} {y.shape}")
+		
 		_, loss = model(x, y)
 
 		if not torch.isfinite(loss):
@@ -274,19 +242,32 @@ def main() -> int:
 				f"Non-finite loss at step {step}: "
 				f"{loss.detach().item()}"
 			)
-
-		loss.backward()
-		
-		torch.nn.utils.clip_grad_norm_(model.parameters(),max_norm=1.0,)
-		
-		optimizer.step()
+		#shark.util.report_tensor("logits", logits)
 
 		if step % opt.train.log_interval == 0:
-			print(
-				f"step {step} | "
-				f"loss {loss.detach().item():.4f}"
-			)
-
+			print(f"step {step} | loss {loss.detach().item():.4f}")
+		
+		# BACKWARD PASS
+		loss.backward()
+		shark.util.report_nonfinite_gradients(model, step=step)
+		shark.util.report_largest_gradient_norms(model)
+		print(f"step {step}: all gradients finite")
+		
+		total_grad_norm = torch.nn.utils.clip_grad_norm_(
+			model.parameters(), max_norm=1.0, error_if_nonfinite=True)
+		
+		print(
+			f"step {step}: gradient norm before clipping = "
+			f"{total_grad_norm.detach().item()}",
+			flush=True,
+		)
+		
+		# OPTIMIZER STEP
+		optimizer.step()
+		print(f"step {step}: optimizer returned")
+		shark.util.check_parameters_finite(model, step=step, location="after optimizer.step()")
+		
+		# CHECKPOINTS
 		if (step + 1) % opt.train.save_interval == 0:
 			ckpt_path1 = os.path.join(opt.general.working_directory, f"ckpt.{step + 1}.pt")
 			shark.format.save_training_checkpoint(
@@ -295,7 +276,11 @@ def main() -> int:
 				optimizer,
 				next_step=step + 1,
 			)
-
+	
+	# ============================================================================================
+	# TRAIN LOOP END
+	# ============================================================================================
+	
 	if max_steps > start_step:
 		shark.format.save_training_checkpoint(
 			ckpt_path,
@@ -310,6 +295,42 @@ def main() -> int:
 			f"No training performed: start_step={start_step}, "
 			f"max_steps={max_steps}."
 		)
+
+
+def main() -> int:
+	parser = argparse.ArgumentParser(
+		description="Train a GPT model from a configured dataset."
+	)
+	parser.add_argument(
+		"--config",
+		default="options.toml",
+		help="Path to the TOML configuration file.",
+	)
+	args = parser.parse_args()
+
+	opt = shark.format.load_trainer_options(args.config)
+	# opt_sys = meta_opt["system"]
+
+	dtype_name = opt.system.dtype
+	dtype_map = {
+		"float32": torch.float32,
+		"bfloat16": torch.bfloat16,
+		"float16": torch.float16,
+	}
+
+	if dtype_name not in dtype_map:
+		raise ValueError(f"Unsupported dtype: {dtype_name!r}")
+
+	torch.set_default_dtype(dtype_map[opt.system.dtype])
+	torch.set_default_device(opt.system.device)
+
+	torch.set_num_threads(16)
+	torch.set_num_interop_threads(2)
+	torch.backends.cuda.enable_flash_sdp(False)
+	torch.backends.cuda.enable_mem_efficient_sdp(False)
+	torch.backends.cuda.enable_math_sdp(True)
+	
+	train(opt)
 
 	return 0
 

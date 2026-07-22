@@ -1,4 +1,5 @@
-// 
+// Tiny program to test ROCm status
+
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
