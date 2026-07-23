@@ -277,7 +277,7 @@ def decode_tokens(tokenizer: Any, tokens: torch.Tensor) -> str:
 	return tokenizer.decode(ids, skip_special_tokens=False)
 """
 
-def demon_ui(opt: shark.format.trainer_options, engine: GenerationEngine, tokenizer: Tokenizer):
+def demon_ui(opt: shark.format.manifest_options, engine: GenerationEngine, tokenizer: Tokenizer):
 	root = tkinter.Tk()
 	root.title("LLM Debugger")
 	root.geometry("800x600")
@@ -534,7 +534,7 @@ def main() -> None:
 	tokenizer, eos_token_id = shark.format.get_tokenizer(
 		meta_opt["train"]["tokenizer_path"])
 
-	opt = shark.format.trainer_options(meta_opt['model'], meta_opt['train'])
+	opt = shark.format.manifest_options(meta_opt['model'], meta_opt['train'])
 	checkpoint_path = args.ckpt or os.path.join(
 		opt.train["working_directory"],
 		"ckpt.pt",

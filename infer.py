@@ -43,7 +43,7 @@ def main() -> None:
 	)
 	args = parser.parse_args()
 
-	opt = shark.format.load_trainer_options(args.config)
+	opt = shark.format.load_manifest_options(args.config)
 	device, dtype = shark.util.resolve_runtime(opt.system, args.device, args.dtype)
 
 	if args.seed is not None:

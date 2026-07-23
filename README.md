@@ -45,6 +45,11 @@ python convert_hf.py \
 
 python trainer.py --config options.toml
 
+# ATTENTION: RUN WITH THESE FALGS: AMD_SERIALIZE_KERNEL=3 HIP_LAUNCH_BLOCKING=1
+# IF YOU USE ROCm
+AMD_SERIALIZE_KERNEL=3 HIP_LAUNCH_BLOCKING=1 python train.py --config options.safe.big.toml
+
+
 python server.py --config options.toml
 ```
 

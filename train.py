@@ -16,6 +16,7 @@ def make_sft_batch(
 	tokenizer: Tokenizer,
 	eos_token_id: int,
 	batch_count: int,
+	seq_clip: int|None,
 	valid_indices: list[int],
 	index_queue: list[int],
 ) -> tuple[Tensor, Tensor]:
@@ -43,9 +44,7 @@ def make_sft_batch(
 
 		try:
 			cx, cy = dataset_context.to_sft_tensors(
-				tokenizer,
-				-1,
-				cindex,
+				tokenizer, -1, cindex, seq_clip
 			)
 
 			if cx.ndim != 1 or cy.ndim != 1:
@@ -100,7 +99,7 @@ def make_sft_batch(
 
 
 
-def train(opt: shark.format.trainer_options):
+def train(opt: shark.format.manifest_options):
 	tokenizer_path = opt.general.tokenizer_path
 	tokenizer, eos_token_id = shark.format.get_tokenizer(tokenizer_path)
 	
@@ -219,6 +218,7 @@ def train(opt: shark.format.trainer_options):
 					tokenizer=tokenizer,
 					eos_token_id=eos_token_id,
 					batch_count=batch_count,
+					seq_clip=opt.train.corpus_block_size,
 					valid_indices=valid_indices,
 					index_queue=index_queue,
 				)
@@ -228,44 +228,56 @@ def train(opt: shark.format.trainer_options):
 					f"Unexpected dataset_type: {dataset_type}"
 				)
 		
+		DEBUG_GRADIENTS = False
+		
 		# MODEL
 		optimizer.zero_grad(set_to_none=True)
 		# shark.util.check_parameters_finite(model, step=step, location="before forward")
 		
 		# FORWARD PASS
-		print(f"{x.shape} {y.shape}")
+		print(f"{y.shape}")
+		if y.size(-1) > opt.train.corpus_block_size:
+			continue
 		
 		_, loss = model(x, y)
+		if DEBUG_GRADIENTS:
+			torch.cuda.synchronize()
+			print(f"step {step}: forward returned", flush=True)
+			# shark.util.report_tensor("logits", logits)
 
 		if not torch.isfinite(loss):
 			raise FloatingPointError(
 				f"Non-finite loss at step {step}: "
 				f"{loss.detach().item()}"
 			)
-		#shark.util.report_tensor("logits", logits)
 
 		if step % opt.train.log_interval == 0:
 			print(f"step {step} | loss {loss.detach().item():.4f}")
 		
 		# BACKWARD PASS
 		loss.backward()
-		shark.util.report_nonfinite_gradients(model, step=step)
-		shark.util.report_largest_gradient_norms(model)
-		print(f"step {step}: all gradients finite")
+		if DEBUG_GRADIENTS:
+			torch.cuda.synchronize()
+			shark.util.report_nonfinite_gradients(model, step=step)
+			shark.util.report_largest_gradient_norms(model)
+			print(f"step {step}: all gradients finite")
 		
-		total_grad_norm = torch.nn.utils.clip_grad_norm_(
-			model.parameters(), max_norm=1.0, error_if_nonfinite=True)
-		
-		print(
-			f"step {step}: gradient norm before clipping = "
-			f"{total_grad_norm.detach().item()}",
-			flush=True,
-		)
+			total_grad_norm = torch.nn.utils.clip_grad_norm_(
+				model.parameters(), max_norm=1.0, error_if_nonfinite=True)
+			
+			print(
+				f"step {step}: gradient norm before clipping = "
+				f"{total_grad_norm.detach().item()}",
+				flush=True,
+			)
 		
 		# OPTIMIZER STEP
 		optimizer.step()
-		print(f"step {step}: optimizer returned")
-		shark.util.check_parameters_finite(model, step=step, location="after optimizer.step()")
+		
+		if DEBUG_GRADIENTS:
+			torch.cuda.synchronize()
+			print(f"step {step}: optimizer returned")
+			shark.util.check_parameters_finite(model, step=step, location="after optimizer.step()")
 		
 		# CHECKPOINTS
 		if (step + 1) % opt.train.save_interval == 0:
@@ -308,7 +320,7 @@ def main() -> int:
 	)
 	args = parser.parse_args()
 
-	opt = shark.format.load_trainer_options(args.config)
+	opt = shark.format.load_manifest_options(args.config)
 	# opt_sys = meta_opt["system"]
 
 	dtype_name = opt.system.dtype

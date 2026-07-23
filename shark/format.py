@@ -110,7 +110,7 @@ class SystemOption:
 
 
 @dataclass(frozen=True, slots=True)
-class trainer_options:
+class manifest_options:
 	"""Complete configuration."""
 
 	model: GPTOption
@@ -144,7 +144,7 @@ def reject_unknown_fields(
 		)
 
 
-def load_trainer_options(path: str | Path) -> trainer_options:
+def load_manifest_options(path: str | Path) -> manifest_options:
 	config_path = Path(path)
 
 	with config_path.open("rb") as file:
@@ -261,15 +261,19 @@ def load_trainer_options(path: str | Path) -> trainer_options:
 		dtype=str(system_raw["dtype"]),
 	)
 
-	return trainer_options(
+	return manifest_options(
 		model=model,
 		general=general,
 		train=train,
 		system=system,
 	)
 
-def model_from_scratch(opt: trainer_options) -> GPT:
-	def get_tokenizer_vocab_count(tokenizer_path: str | Path) -> int:
+def model_from_scratch(opt: manifest_options) -> GPT:
+	"""	Initialize a compatible GPT model
+		It doesn't mean this function is for the first time of the mode
+		GPT object should be created no matter it's resumed or from scratch.
+	"""
+	def get_tokenizer_vocab_count(tokenizer_path: str | Path) -> int: 
 		tokenizer = Tokenizer.from_file(
 			os.path.join(tokenizer_path, "tokenizer.json")
 		)
@@ -525,7 +529,7 @@ class JsonlDataset:
 				self.items.append(conversation)
 	
 	def to_sft_tensors(self, tokenizer: Tokenizer, ignore_index: int, conversation_index: int,
-					) -> tuple[Tensor, Tensor]:
+					seq_clip: int|None) -> tuple[Tensor, Tensor]:
 		# Python masking
 		token_ids: list[int] = []
 		train_mask: list[bool] = []
@@ -579,6 +583,28 @@ class JsonlDataset:
 				f"conversation: {conversation}"
 			)
 		
+		# We need seq_clip + 1 raw tokens because input and target tensors
+		# are shifted by one position.
+		if seq_clip is not None:
+			if seq_clip <= 0:
+				raise ValueError(
+					f"seq_clip must be positive or None, got {seq_clip}"
+				)
+
+			raw_token_limit = seq_clip + 1
+
+			if len(token_ids) > raw_token_limit:
+				token_ids = token_ids[:raw_token_limit]
+				train_mask = train_mask[:raw_token_limit]
+
+		# Check the retained shifted region, not the original conversation.
+		if not any(train_mask[1:]):
+			raise ValueError(
+				"sequence clipping removed all assistant targets; "
+				f"conversation_index={conversation_index}, "
+				f"seq_clip={seq_clip}"
+			)
+
 		targets = [
 			token_id if should_train else ignore_index
 			for token_id, should_train in zip(token_ids[1:], train_mask[1:])
@@ -607,7 +633,7 @@ class JsonlDataset:
 
 		for cindex in range(item_count):
 			try:
-				cx, cy = self.to_sft_tensors(tokenizer, -1, cindex)
+				cx, cy = self.to_sft_tensors(tokenizer, -1, cindex, None)
 
 				if cx.ndim != 1 or cy.ndim != 1:
 					raise ValueError(

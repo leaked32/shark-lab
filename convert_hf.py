@@ -85,7 +85,7 @@ def main() -> None:
 	)
 	args = parser.parse_args()
 
-	opt = shark.format.load_trainer_options(args.config)
+	opt = shark.format.load_manifest_options(args.config)
 
 	source_path = args.source or opt.general.tokenizer_path
 	output_path = args.output or os.path.join(
