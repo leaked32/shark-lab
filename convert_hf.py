@@ -9,7 +9,7 @@ from collections.abc import Mapping
 import torch
 from transformers import AutoModelForCausalLM
 
-import shared.format
+import shark.format
 
 import torch.nn as nn
 from torch import Tensor as Tensor
@@ -85,15 +85,11 @@ def main() -> None:
 	)
 	args = parser.parse_args()
 
-	meta_opt = shared.format.load_meta_dataset(args.config)
-	opt = shared.format.trainer_options(
-		meta_opt["model"],
-		meta_opt["train"],
-	)
+	opt = shark.format.load_trainer_options(args.config)
 
-	source_path = args.source or opt.train["tokenizer_path"]
+	source_path = args.source or opt.general.tokenizer_path
 	output_path = args.output or os.path.join(
-		opt.train["working_directory"],
+		opt.general.working_directory,
 		"pretrained.pt",
 	)
 
@@ -101,7 +97,7 @@ def main() -> None:
 	torch.set_default_device("cpu")
 	torch.set_default_dtype(resolve_dtype(args.dtype))
 
-	local_model = shared.format.model_from_scratch(opt)
+	local_model = shark.format.model_from_scratch(opt)
 
 	print(f"loading Hugging Face model: {source_path}")
 
@@ -126,7 +122,7 @@ def main() -> None:
 	):
 		raise RuntimeError("embedding weights were not tied")
 
-	shared.format.save_model_checkpoint(
+	shark.format.save_model_checkpoint(
 		output_path,
 		local_model,
 		step=0,
