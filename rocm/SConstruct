@@ -1,30 +1,55 @@
-env = Environment(
-    CXX="hipcc",
+import os
+
+
+cpp_env = Environment(
+	CXX="clang++",
+	CXXFLAGS=[
+		"-std=c++20",
+		"-O2",
+	],
 )
 
-Export("env")
+hip_env = Environment(
+	CXX="hipcc",
+	CXXFLAGS=[
+		"-std=c++20",
+		"-O2",
+	],
+)
 
-VariantDir(
-    "build/hip-test",
-    "hip-test",
-    duplicate=False
+
+cpp_env.Tool("compilation_db")
+hip_env.Tool("compilation_db")
+
+
+Export("cpp_env", "hip_env")
+
+
+shark = SConscript(
+	"shark/SConscript",
+	variant_dir="build/shark",
+	duplicate=False,
 )
-'''
-VariantDir(
-    "build/matrix-test",
-    "matrix-test",
-    duplicate=False
+
+# tell clangd infer HIP mode from hipcc
+hip_env.Append(
+    CXXFLAGS=[
+        "-x",
+        "hip",
+    ],
+	CPPPATH=[
+		"#shark/include",
+	],
 )
-'''
+
+
 SConscript(
-    "build/hip-test/SConscript"
+	"hip-test/SConscript",
+	variant_dir="build/hip-test",
+	duplicate=False,
 )
-'''
-SConscript(
-    "build/matrix-test/SConscript"
-)
-'''
 
-# clangd support
-env.Tool("compilation_db")
-env.CompilationDatabase("compile_commands.json")
+
+cpp_env.CompilationDatabase(
+	"compile_commands.json"
+)

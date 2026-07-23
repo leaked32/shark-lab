@@ -9,7 +9,7 @@ venv/
 build/
 .cache/
 .sconsign.dblite
-compile_commands.json
+compile_commands.*
 CMakePresets.json
 
 # Data

@@ -1,5 +1,64 @@
 // Tiny program to test ROCm status
+// #define __HIP_DISABLE_CPP_FUNCTIONS__
+#include <hip/amd_detail/amd_hip_runtime.h>
+#include <hip/hip_runtime.h>
+#include <iostream>
+#include <vector>
 
+#include "shark/shark.h"
+
+__global__ void matadd_kernel(float* c, const float* a, const float* b, int n)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx < n) {
+		c[idx] = a[idx] + b[idx];
+	}
+}
+
+int main()
+{
+	try{
+		const int n = 1024 * 1024;
+		size_t bytes = n * sizeof(float);
+		
+		std::vector<float> h_a(n, 1.f);
+		std::vector<float> h_b(n, 2.f);
+		std::vector<float> h_c(n);
+		float* d_a = nullptr;
+		float* d_b = nullptr;
+		float* d_c = nullptr;
+		
+		shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
+		
+		ck = hipMalloc(&d_a, bytes);
+		ck = hipMalloc(&d_b, bytes);
+		ck = hipMalloc(&d_c, bytes);
+		
+		ck = hipMemcpy(d_a, h_a.data(), bytes, hipMemcpyHostToDevice);
+		ck = hipMemcpy(d_b, h_b.data(), bytes, hipMemcpyHostToDevice);
+		
+		int threads = 256;
+		int blocks = (n + threads - 1) / threads;
+		
+		matadd_kernel<<<blocks, threads>>>(d_c, d_a, d_b, n);
+		
+		ck = hipDeviceSynchronize();
+		ck = hipMemcpy(h_c.data(), d_c, bytes, hipMemcpyDeviceToHost);
+		
+		std::cout << h_c[0] << std::endl;
+		
+		ck = hipFree(d_a);
+		ck = hipFree(d_b);
+		ck = hipFree(d_c);
+	}
+	catch(std::exception& exc) {
+		std::cout << exc.what() << std::endl;
+		
+	}
+}
+
+
+/*
 #define __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 
@@ -138,3 +197,4 @@ int main()
 	
 	return 0;
 }
+*/
