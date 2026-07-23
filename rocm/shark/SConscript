@@ -1,0 +1,16 @@
+Import("cpp_env")
+
+cpp_env.Append(
+	CPPPATH=[
+		"#shark/include",
+	],
+)
+
+library = cpp_env.StaticLibrary(
+	target="shark",
+	source=[
+		"src/shark.cpp",
+	],
+)
+
+Return("library")
