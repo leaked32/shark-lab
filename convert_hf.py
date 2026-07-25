@@ -1,3 +1,12 @@
+"""
+shark-lab
+Repository: https://github.com/leaked32/shark-lab
+
+File: convert_hf.py
+
+License: MIT
+"""
+
 from __future__ import annotations
 
 import argparse

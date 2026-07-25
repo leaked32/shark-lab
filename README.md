@@ -28,6 +28,10 @@ scripts/
   collector.py  Conversation generation tool
   corpus/          Corpus generation utilities
   crawlers/        Local/private crawling tools, not intended for public release
+
+rocm/
+  shark/          A simple library
+  hip-test/       An ROCm playground
 ```
 
 ## Notes
@@ -49,22 +53,15 @@ python trainer.py --config options.toml
 # IF YOU USE ROCm
 AMD_SERIALIZE_KERNEL=3 HIP_LAUNCH_BLOCKING=1 python train.py --config options.safe.big.toml
 
-
 python server.py --config options.toml
 ```
 
 
+in rocm
 ```bash
-cmake --preset linux-x64-debug
-cmake --build build/linux-x64-debug
-./build/linux-x64-debug/example-app
+scons
+./build/hip-test/hip-test
 ```
 
-
-```bash
-export PATH=/usr/bin:$PATH
-
-cmake --preset linux-x64-debug
-cmake --build build/linux-x64-debug
-./build/linux-x64-debug/hip-test/hip-test
-```
+CMake doesn't support Debian's package layout for system installed ROCm well currently.
+I would choose SConstruct here.

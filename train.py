@@ -1,3 +1,12 @@
+"""
+shark-lab
+Repository: https://github.com/leaked32/shark-lab
+
+File: train.py
+
+License: MIT
+"""
+
 import argparse
 import os
 import random

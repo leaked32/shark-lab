@@ -1,8 +1,12 @@
 """
 shark-lab
-shark/format.py
+Repository: https://github.com/leaked32/shark-lab
+
+File: shark/format.py
 
 This little module adapts shark-lab to different purposes
+
+License: MIT
 """
 
 from __future__ import annotations
@@ -37,25 +41,25 @@ class GeneralOption:
 @dataclass(frozen=True, slots=True)
 class TrainOption:
 	"""Training settings stored under [train]."""
-
+	
 	max_steps: int
 	log_interval: int
 	save_interval: int
 	save_independent_checkpoints: bool
-
+	
 	dataset_type: int
 	batch_count: int
-
+	
 	dataset_sft_train: Path
 	dataset_train: Path
 	dataset_validation: Path
 	corpus_block_size: int
-
+	
 	optimizer_learning_rate: float
 	adamw_weight_decay: float
 	adamw_beta1: float
 	adamw_beta2: float
-
+	
 	def __post_init__(self) -> None:
 		if self.max_steps <= 0:
 			raise ValueError("train.max_steps must be > 0")
@@ -91,17 +95,17 @@ class TrainOption:
 @dataclass(frozen=True, slots=True)
 class SystemOption:
 	"""Runtime settings stored under [system]."""
-
+	
 	device: str
 	dtype: str
-
+	
 	def __post_init__(self) -> None:
 		allowed_dtypes = {
 			"float32",
 			"float16",
 			"bfloat16",
 		}
-
+		
 		if self.dtype not in allowed_dtypes:
 			raise ValueError(
 				f"system.dtype must be one of {sorted(allowed_dtypes)}, "
@@ -112,7 +116,7 @@ class SystemOption:
 @dataclass(frozen=True, slots=True)
 class manifest_options:
 	"""Complete configuration."""
-
+	
 	model: GPTOption
 	general: GeneralOption
 	train: TrainOption
@@ -123,10 +127,10 @@ def require_section(
 	name: str,
 ) -> dict[str, Any]:
 	section = config.get(name)
-
+	
 	if not isinstance(section, dict):
 		raise ValueError(f"Missing or invalid [{name}] section")
-
+	
 	return section
 
 
@@ -136,7 +140,7 @@ def reject_unknown_fields(
 	allowed_fields: set[str],
 ) -> None:
 	unknown_fields = set(data) - allowed_fields
-
+	
 	if unknown_fields:
 		names = ", ".join(sorted(unknown_fields))
 		raise ValueError(
@@ -146,15 +150,15 @@ def reject_unknown_fields(
 
 def load_manifest_options(path: str | Path) -> manifest_options:
 	config_path = Path(path)
-
+	
 	with config_path.open("rb") as file:
 		raw = tomllib.load(file)
-
+	
 	model_raw = require_section(raw, "model")
 	general_raw = require_section(raw, "general")
 	train_raw = require_section(raw, "train")
 	system_raw = require_section(raw, "system")
-
+	
 	reject_unknown_fields(
 		"model",
 		model_raw,
@@ -171,7 +175,7 @@ def load_manifest_options(path: str | Path) -> manifest_options:
 			"bias",
 		},
 	)
-
+	
 	reject_unknown_fields(
 		"general",
 		general_raw,
@@ -181,7 +185,7 @@ def load_manifest_options(path: str | Path) -> manifest_options:
 			"working_directory",
 		},
 	)
-
+	
 	reject_unknown_fields(
 		"train",
 		train_raw,
@@ -202,13 +206,13 @@ def load_manifest_options(path: str | Path) -> manifest_options:
 			"adamw_beta2",
 		},
 	)
-
+	
 	reject_unknown_fields(
 		"system",
 		system_raw,
 		{"device", "dtype"},
 	)
-
+	
 	# `bias` is accepted in the TOML for compatibility but deliberately
 	# not passed to GPTOption because the model does not support it yet.
 	bias = model_raw.get("bias", False)
@@ -216,7 +220,7 @@ def load_manifest_options(path: str | Path) -> manifest_options:
 		raise ValueError(
 			"model.bias=true is unsupported by the current model"
 		)
-
+	
 	model = GPTOption(
 		vocab=int(model_raw["vocab"]),
 		layer=int(model_raw["layer"]),
@@ -228,13 +232,13 @@ def load_manifest_options(path: str | Path) -> manifest_options:
 		eps=float(model_raw["eps"]),
 		rope_theta=float(model_raw["rope_theta"]),
 	)
-
+	
 	general = GeneralOption(
 		system_prompt=str(general_raw["system_prompt"]),
 		tokenizer_path=Path(general_raw["tokenizer_path"]),
 		working_directory=Path(general_raw["working_directory"]),
 	)
-
+	
 	train = TrainOption(
 		max_steps=int(train_raw["max_steps"]),
 		log_interval=int(train_raw["log_interval"]),
@@ -255,12 +259,12 @@ def load_manifest_options(path: str | Path) -> manifest_options:
 		adamw_beta1=float(train_raw["adamw_beta1"]),
 		adamw_beta2=float(train_raw["adamw_beta2"]),
 	)
-
+	
 	system = SystemOption(
 		device=str(system_raw["device"]),
 		dtype=str(system_raw["dtype"]),
 	)
-
+	
 	return manifest_options(
 		model=model,
 		general=general,
@@ -277,7 +281,7 @@ def model_from_scratch(opt: manifest_options) -> GPT:
 		tokenizer = Tokenizer.from_file(
 			os.path.join(tokenizer_path, "tokenizer.json")
 		)
-
+		
 		return tokenizer.get_vocab_size(with_added_tokens=True)
 	vocab_size = get_tokenizer_vocab_count(opt.general.tokenizer_path)
 
@@ -292,22 +296,22 @@ def model_from_scratch(opt: manifest_options) -> GPT:
 			"model vocabulary does not match tokenizer: "
 			f"model={configured_vocab}, tokenizer={vocab_size}"
 		)
-
-
+	
+	
 	return GPT(opt.model)
 
 
 def _atomic_torch_save(data: dict[str, Any], path: str) -> None:
 	directory = os.path.dirname(os.path.abspath(path))
 	os.makedirs(directory, exist_ok=True)
-
+	
 	fd, temporary_path = tempfile.mkstemp(
 		dir=directory,
 		prefix=".checkpoint-",
 		suffix=".tmp",
 	)
 	os.close(fd)
-
+	
 	try:
 		torch.save(data, temporary_path)
 		os.replace(temporary_path, path)
@@ -323,14 +327,14 @@ def save_model_checkpoint(
 	step: int = 0,
 ) -> None:
 	"""Save weights for inference or pretrained-model conversion."""
-
+	
 	checkpoint = {
 		"format_version": 1,
 		"kind": "model",
 		"model": model.state_dict(),
 		"step": int(step),
 	}
-
+	
 	_atomic_torch_save(checkpoint, path)
 	print(f"saved model checkpoint: {path}")
 
@@ -342,14 +346,14 @@ def load_model_checkpoint(
 ) -> int:
 	if not os.path.isfile(path):
 		raise FileNotFoundError(f"checkpoint not found: {path}")
-
+	
 	checkpoint = torch.load(path, map_location=map_location)
-
+	
 	if "model" not in checkpoint:
 		raise RuntimeError("checkpoint contains no model state")
-
+	
 	model.load_state_dict(checkpoint["model"], strict=True)
-
+	
 	step = int(checkpoint.get("step", 0))
 	print(f"loaded model checkpoint: {path}")
 	return step
@@ -362,7 +366,7 @@ def save_training_checkpoint(
 	next_step: int,
 ) -> None:
 	"""Save everything needed to resume training."""
-
+	
 	checkpoint = {
 		"format_version": 1,
 		"kind": "training",
@@ -383,14 +387,14 @@ def load_training_checkpoint(
 ) -> int:
 	if not os.path.isfile(path):
 		raise FileNotFoundError(f"checkpoint not found: {path}")
-
+	
 	checkpoint = torch.load(path, map_location=map_location)
-
+	
 	if "model" not in checkpoint:
 		raise RuntimeError("checkpoint contains no model state")
 	else:
 		model.load_state_dict(checkpoint["model"], strict=True)
-
+	
 	if "optimizer" not in checkpoint:
 		shark.util.notify_confirm("checkpoint contains no optimizer state")
 		next_step = 0
@@ -414,34 +418,34 @@ def format_chat(
 ) -> str:
 	if not messages:
 		raise ValueError("messages cannot be empty")
-
+	
 	valid_roles = {"system", "user", "assistant"}
-
+	
 	for message in messages:
 		if message["role"] not in valid_roles:
 			raise ValueError(
 				f"unsupported role: {message['role']}"
 			)
-
+	
 	formatted: list[str] = []
-
+	
 	if messages[0]["role"] != "system":
 		formatted.append(
 			f"<|im_start|>system\n"
 			f"{system_prompt}"
 			f"<|im_end|>\n"
 		)
-
+	
 	for message in messages:
 		formatted.append(
 			f"<|im_start|>{message['role']}\n"
 			f"{message['content']}"
 			f"<|im_end|>\n"
 		)
-
+	
 	if add_generation_prompt:
 		formatted.append("<|im_start|>assistant\n")
-
+	
 	return "".join(formatted)
 
 def text_ids(tokenizer, text: str) -> list[int]:
@@ -502,7 +506,7 @@ class JsonlMessage:
 	content: str
 
 class JsonlDataset:
-
+	
 	def __init__(self, path: str | Path):
 		self.path = path if isinstance(path, Path) else Path(path)
 		self.items: list[list[JsonlMessage]] = []
@@ -590,13 +594,13 @@ class JsonlDataset:
 				raise ValueError(
 					f"seq_clip must be positive or None, got {seq_clip}"
 				)
-
+			
 			raw_token_limit = seq_clip + 1
-
+			
 			if len(token_ids) > raw_token_limit:
 				token_ids = token_ids[:raw_token_limit]
 				train_mask = train_mask[:raw_token_limit]
-
+		
 		# Check the retained shifted region, not the original conversation.
 		if not any(train_mask[1:]):
 			raise ValueError(
@@ -604,7 +608,7 @@ class JsonlDataset:
 				f"conversation_index={conversation_index}, "
 				f"seq_clip={seq_clip}"
 			)
-
+		
 		targets = [
 			token_id if should_train else ignore_index
 			for token_id, should_train in zip(token_ids[1:], train_mask[1:])
@@ -628,28 +632,28 @@ class JsonlDataset:
 
 		if item_count == 0:
 			raise RuntimeError("The SFT dataset is empty.")
-
+		
 		print(f"Validating {item_count} SFT records...")
-
+		
 		for cindex in range(item_count):
 			try:
 				cx, cy = self.to_sft_tensors(tokenizer, -1, cindex, None)
-
+				
 				if cx.ndim != 1 or cy.ndim != 1:
 					raise ValueError(
 						f"Expected one-dimensional tensors, got "
 						f"x.ndim={cx.ndim}, y.ndim={cy.ndim}"
 					)
-
+				
 				if cx.size(0) != cy.size(0):
 					raise ValueError(
 						f"Input and target lengths differ: "
 						f"{cx.size(0)} != {cy.size(0)}"
 					)
-
+				
 				if cx.numel() == 0:
 					raise ValueError("The converted sample is empty.")
-
+			
 			except Exception as exc:
 				print(
 					f"Skipping invalid SFT record "
@@ -657,19 +661,19 @@ class JsonlDataset:
 				)
 				invalid_indices.append(cindex)
 				continue
-
+			
 			valid_indices.append(cindex)
 
 		if not valid_indices:
 			raise RuntimeError("The SFT dataset contains no valid training records.")
-
+		
 		skipped_count = item_count - len(valid_indices)
-
+		
 		print(
 			f"SFT validation complete: "
 			f"{len(valid_indices)} valid, "
 			f"{skipped_count} skipped."
 		)
-
+		
 		return valid_indices, invalid_indices
 

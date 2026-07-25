@@ -1,8 +1,18 @@
+/*
+ * Project: shark-lab
+ * Repository: https://github.com/leaked32/shark-lab
+ *
+ * File: shark/include/shark/shark.h
+ *
+ * License: MIT
+ */
+
+#ifndef __cplusplus
+#error "This header requires C++"
+#endif
 
 #include "shark/common.h"
 
-#include <hip/amd_detail/amd_hip_vector_types.h>
-#include <random>
 #include <list>
 #include <chrono>
 #include <thread>
@@ -18,6 +28,7 @@
 #include <stack>
 #include <iostream>
 #include <format>
+#include <random>
 
 #include <boost/json.hpp>
 
@@ -241,6 +252,51 @@ struct rcheck
 	}
 };
 
+
+struct profiler
+{
+	using clock = std::chrono::steady_clock;
+	using time_point = clock::time_point;
+	using duration = std::chrono::duration<double>;
+	
+	profiler(size_t reserve, bool print_on_lap) :
+			start(clock::now()), print_on_lap(print_on_lap) {
+		laps.reserve(reserve);
+	}
+	
+	void lap(std::optional<std::string_view> msg = std::nullopt)
+	{
+		time_point end = clock::now();
+		const duration diff = end - start;
+		laps.emplace_back(diff);
+		
+		if (print_on_lap) {
+			print_duration(diff, msg);
+		}
+		
+		reset(); // exclude emplace_back
+	}
+	
+	void reset() {
+		start = clock::now();
+	}
+	
+	static void print_duration(duration value, std::optional<std::string_view> msg = std::nullopt)
+	{
+		const auto milliseconds =
+		std::chrono::duration<double, std::milli>(value).count();
+		
+		if (msg.has_value()) {
+			log::info("{}: {:.6f} ms", msg.value(), milliseconds);
+		} else {
+			log::info("{:.6f} ms", milliseconds);
+		}
+	}
+	
+	time_point start;
+	bool print_on_lap;
+	std::vector<duration> laps;
+};
 
 void forcely_print_string(const std::string &input);
 void forcely_print_vector(const std::vector<std::string> &input);

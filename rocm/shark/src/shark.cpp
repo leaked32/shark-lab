@@ -1,3 +1,11 @@
+/*
+ * Project: shark-lab
+ * Repository: https://github.com/leaked32/shark-lab
+ *
+ * File: shark/src/shark.cpp
+ *
+ * License: MIT
+ */
 
 #include <boost/json/serialize.hpp>
 #include <fstream>

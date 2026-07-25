@@ -1,8 +1,12 @@
 """
 shark-lab
-server.py
+Repository: https://github.com/leaked32/shark-lab
+
+File: train.py
 
 This file is still experimental, it contains test suits for itself.
+
+License: MIT
 """
 
 import argparse

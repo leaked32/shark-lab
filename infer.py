@@ -1,9 +1,14 @@
 """
 shark-lab
-inference.py
+Repository: https://github.com/leaked32/shark-lab
+
+File: train.py
 
 The file test the model by calling generate of GPT directly.
+
+License: MIT
 """
+
 from __future__ import annotations
 
 import argparse

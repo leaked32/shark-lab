@@ -1,8 +1,12 @@
 """
 shark-lab
-shark/model.py
+Repository: https://github.com/leaked32/shark-lab
 
-The module defines the model architecture
+File: shark/model.py
+
+The module defines the model architecture.
+
+License: MIT
 """
 
 import math
@@ -801,19 +805,19 @@ class GPT(nn.Module):
 			[KVCache2(idx.size(0), num_blocks=1024, block_size=16) for _ in range(self.opt.layer)],
 			torch.arange(idx.size(0), dtype=torch.long, device=idx.device)
 		)
-
+		
 		for step in range(max_new_tokens):
 			idx_cond = idx if step == 0 else idx[:, -1:]
-
+			
 			logits, _ = self(idx_cond, None, state)
 			idx_next = self.sample_next_token(logits, temperature, top_k)
-
+			
 			idx = torch.cat((idx, idx_next), dim=1)
-
+			
 			if (eos_token_id is not None and torch.all(idx_next == eos_token_id)):
 				# eos_token_id has already been appended to the result
 				break
-
+		
 		return idx
 	
 	@staticmethod

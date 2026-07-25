@@ -1,8 +1,12 @@
 """
 shark-lab
-shark/util.py
+Repository: https://github.com/leaked32/shark-lab
+
+File: shark/util.py
 
 This module collects discrete shared functions
+
+License: MIT
 """
 
 from typing import Any
