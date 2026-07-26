@@ -172,19 +172,21 @@ struct BenchResult {
 	double gflops;
 };
 
-using KernelLauncher = void(float*, const float*, const float*, int);
+// using KernelLauncher = void();
 //template<typename KernelLauncher>
-BenchResult bench_matmul(
-	const std::string& name, KernelLauncher launcher,
-	float* d_c, const float* d_a, const float* d_b,
-	int dim, int warmup = 10, int repeats = 100)
+
+// template<int _block_dim>
+float bench_kernel(
+	const std::string& name, std::function<void()> launcher,
+	int warmup = 10, int repeats = 100)
 {
 	// warmup
 	for (int i = 0; i < warmup; ++i) {
-		launcher(d_c, d_a, d_b, dim);
+		launcher();
 	}
 	
 	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
+	
 	ck = hipDeviceSynchronize();
 	
 	hipEvent_t start;
@@ -192,437 +194,178 @@ BenchResult bench_matmul(
 	
 	ck = hipEventCreate(&start);
 	ck = hipEventCreate(&stop);
+	
 	ck = hipEventRecord(start);
 	
 	for (int i = 0; i < repeats; ++i) {
-		launcher(d_c, d_a, d_b, dim);
+		launcher();
 	}
 	
 	ck = hipEventRecord(stop);
 	ck = hipEventSynchronize(stop);
 	
-	float total_ms = 0.f;
-	
+	float total_ms = 0.0f;
 	ck = hipEventElapsedTime(&total_ms, start, stop);
 	
 	ck = hipEventDestroy(start);
 	ck = hipEventDestroy(stop);
 	
-	float avg_ms = total_ms / repeats;
-	
-	
-	// C=A*B:
-	// each output does dim multiplications + additions
-	double operations = 2.0 * dim * dim * dim;
-	
-	double seconds = avg_ms / 1000.0;
-	
-	double gflops =
-	operations / seconds / 1e9;
-	
-	std::stringstream ss;
-	ss << name << "\n" << "  time: " << avg_ms << " ms\n"
-		<< "  perf: " << gflops << " GFLOPS\n\n";
-	
-	shark::log::info("{}", ss.str());
-	
-	return { avg_ms, gflops };
+	return total_ms / repeats;
 }
 
+void bench_report(size_t operations, 
+				  uint32_t grid_rows, uint32_t grid_cols,
+				  uint32_t block_rows, uint32_t block_cols, float avg_ms) {
+	
+	float seconds = avg_ms / 1000.f;
+	// double operations = 2.0 * cols * rows * paired_dim;
+	double gflops = double(operations) / seconds / 1e9;
+	
+	shark::log::info("[SHARK REPORT]\n"
+		"operations: {}\ngrid: {}x{}\nblock: {}x{}\n"
+		"threads per block: {}\naverage time per kernel: {}\ngflops: {}", 
+		operations, grid_rows, grid_cols, block_rows, block_cols, 
+		block_rows * block_cols, avg_ms, gflops);
+}
 
 // ------------------------------------------------------------
 // Convenient benchmark functions
 // ------------------------------------------------------------
 
 template<int BLOCK>
-BenchResult bench_naive_matmul(float* d_c, const float* d_a, const float* d_b, int dim)
+float bench_naive_matmul(float* d_c, const float* d_a, const float* d_b, int dim)
 {
-	return bench_matmul(
+	return bench_kernel(
 		"naive matmul",
-		[](float* c, const float* a, const float* b, int dim)
+		[d_c, d_a, d_b, dim]
 		{
 			dim3 block(BLOCK, BLOCK);
 			dim3 grid((dim + BLOCK - 1) / BLOCK, (dim + BLOCK - 1) / BLOCK);
 			
-			matmul_kernel<BLOCK><<<grid, block>>>(c, a, b, dim);
-		},
-		d_c, d_a, d_b, dim
+			matmul_kernel<BLOCK><<<grid, block>>>(d_c, d_a, d_b, dim);
+		}
 	);
 }
 
 
 template<int BLOCK>
-BenchResult bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim)
+float bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim)
 {
-	return bench_matmul(
+	dim3 block(BLOCK, BLOCK);
+	dim3 grid((dim + BLOCK - 1) / BLOCK, (dim + BLOCK - 1) / BLOCK);
+	
+	float avg_ms = bench_kernel(
 		"shared tiled matmul",
-		[](float* c, const float* a, const float* b, int dim)
+		[d_c, d_a, d_b, dim, grid, block]
 		{
-			dim3 block(BLOCK, BLOCK);
-			dim3 grid((dim + BLOCK - 1) / BLOCK, (dim + BLOCK - 1) / BLOCK);
 			
-			matmul_kernel_1<BLOCK><<<grid, block>>>(c, a, b, dim);
-		},
-		d_c, d_a, d_b, dim
+			matmul_kernel_1<BLOCK><<<grid, block>>>(d_c, d_a, d_b, dim);
+		}
 	);
+	
+	
+	bench_report(2ull * dim * dim * dim, grid.y, grid.x, block.y, block.x, avg_ms);
+	
+	return avg_ms;
 }
 
-int main()
+class TinyTensor
 {
-	
-	int dim = 2048;
-	// int threads = 256;
-	
-	const int elements = dim * dim;
-	
-	size_t bytes = elements * sizeof(float);
-	
-	std::vector<float> h_a(elements, 1.f);
-	std::vector<float> h_b(elements, 2.f);
-	std::vector<float> h_c(elements);
-	float* d_a = nullptr;
-	float* d_b = nullptr;
-	float* d_c = nullptr;
-	
-	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
-	
-	hipEvent_t start;
-	hipEvent_t stop;
-	
-	ck = hipEventCreate(&start);
-	ck = hipEventCreate(&stop);
-	
-	ck = hipEventRecord(start);
-	
-	shark::profiler pf(64, true);
-	
-	pf.reset();
-	
-	ck = hipMalloc(&d_a, bytes);
-	ck = hipMalloc(&d_b, bytes);
-	ck = hipMalloc(&d_c, bytes);
-	
-	pf.lap("hipMalloc");
-	
-	pf.reset();
-	ck = hipMemcpy(d_a, h_a.data(), bytes, hipMemcpyHostToDevice);
-	ck = hipMemcpy(d_b, h_b.data(), bytes, hipMemcpyHostToDevice);
-	pf.lap("H->D");
-	// bench_naive_matmul<16>(d_c, d_a, d_b, dim);
-	// bench_tiled_matmul<8>(d_c, d_a, d_b, dim);
-	// bench_tiled_matmul<16>(d_c, d_a, d_b, dim);
-	// bench_tiled_matmul<32>(d_c, d_a, d_b, dim);
-	
-	
-	auto df = [&]<int _block_dim> {
-		
-		dim3 block(_block_dim, _block_dim);
-		dim3 grid((dim + block.x - 1) / block.x, (dim + block.y - 1) / block.y);
-		matmul_kernel_1<_block_dim><<<grid, block>>>(d_c,d_a,d_b,dim);
-		ck = hipGetLastError();
-		ck = hipDeviceSynchronize();
-		pf.lap("matmul_kernel_1");
-		
-		pf.reset();
-		ck = hipMemcpy(h_c.data(), d_c, bytes, hipMemcpyDeviceToHost);
-		pf.lap("D->H");
-	};
-	df.template operator()<16>();
-	std::vector<float> cp_h_c(h_c.begin(), h_c.end());
-	ck = hipMemset(d_c, 0, bytes);
-	df.template operator()<8>();
-	
-	float* cp_d_c = nullptr;
-	ck = hipMalloc(&cp_d_c, bytes);
-	ck = hipMemcpy(cp_d_c, cp_h_c.data(), bytes, hipMemcpyHostToDevice);
-	// same_matrix<<<grid, block>>>(d_a, d_c, dim, dim);
-	// same_matrix<<<grid, block>>>(cp_d_c, d_c, dim, dim);
-	dim3 block(16,16);
-	dim3 grid((dim+block.x - 1)/block.x, (dim+block.y - 1)/block.y);
-	int diff_count = same_matrix_helper(grid, block, cp_d_c, d_c, dim, dim);
-	shark::log::info("diff_count: {}", diff_count);
-	// diff_count = same_matrix_helper(grid, block, d_a, d_c, dim, dim);
-	// shark::log::info("diff_count: {}", diff_count);
-	
-	ck = hipGetLastError();
-	ck = hipDeviceSynchronize();
-	pf.lap("same_matrix");
-	
-	
-	pf.reset();
-	ck = hipFree(d_a);
-	ck = hipFree(d_b);
-	ck = hipFree(d_c);
-	pf.lap("hipFree");
-	ck = hipEventDestroy(start);
-	ck = hipEventDestroy(stop);
-}
-
-/*
-int main()
-{
-	
-	try{
-		const int dim = 8;
-		const int elements = dim * dim;
-		
-		size_t bytes = elements * sizeof(float);
-		
-		std::vector<float> h_a(elements, 1.f);
-		std::vector<float> h_b(elements, 2.f);
-		std::vector<float> h_c(elements);
-		float* d_a = nullptr;
-		float* d_b = nullptr;
-		float* d_c = nullptr;
-		
-		shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
-		
-		hipEvent_t start;
-		hipEvent_t stop;
-		
-		ck = hipEventCreate(&start);
-		ck = hipEventCreate(&stop);
-		
-		ck = hipEventRecord(start);
-		
-		shark::profiler pf(64, true);
-		
-		pf.reset();
-		
-		ck = hipMalloc(&d_a, bytes);
-		ck = hipMalloc(&d_b, bytes);
-		ck = hipMalloc(&d_c, bytes);
-		
-		pf.lap("hipMalloc");
-		
-		int threads = 256;
-		int blocks = (dim + threads - 1) / threads;
-		
-		for (int iteration = 0; iteration < 20; ++iteration) {
-			pf.reset();
-			ck = hipMemcpy(d_a, h_a.data(), bytes, hipMemcpyHostToDevice);
-			ck = hipMemcpy(d_b, h_b.data(), bytes, hipMemcpyHostToDevice);
-			pf.lap("H->D");
-			
-			// constexpr int repeats = 100;
-			
-			ck = hipEventRecord(start);
-			
-			// for (int i = 0; i < repeats; ++i) {
-			matmul_kernel<<<blocks, threads>>>(d_c, d_a, d_b, dim);
-			// }
-			
-			ck = hipGetLastError();
-			ck = hipEventRecord(stop);
-			ck = hipEventSynchronize(stop);
-			
-			float total_ms = 0.f;
-			ck = hipEventElapsedTime(&total_ms, start, stop);
-			
-			// std::cout << "Average kernel: "
-			// << total_ms / repeats
-			// << " ms\n";
-			
-			pf.reset();
-			ck = hipMemcpy(h_c.data(), d_c, bytes, hipMemcpyDeviceToHost);
-			pf.lap("D->H");
-			
-			print_matrix(d_c, dim, dim);
-		}
-		
-		
-		std::cout << h_c[0] << std::endl;
-		
-		pf.reset();
-		ck = hipFree(d_a);
-		ck = hipFree(d_b);
-		ck = hipFree(d_c);
-		pf.lap("hipFree");
-		ck = hipEventDestroy(start);
-		ck = hipEventDestroy(stop);
-		
-	}
-	catch(std::exception& exc) {
-		std::cout << exc.what() << std::endl;
-		
-	}
-	
-	
-	return 0;
-}
-*/
-/*
-int main1()
-{
-	try{
-		const int n = 32 * 1024 * 1024; // 128 MiB per float array
-		size_t bytes = n * sizeof(float);
-		
-		std::vector<float> h_a(n, 1.f);
-		std::vector<float> h_b(n, 2.f);
-		std::vector<float> h_c(n);
-		float* d_a = nullptr;
-		float* d_b = nullptr;
-		float* d_c = nullptr;
-		
-		shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
-		
-		hipEvent_t start;
-		hipEvent_t stop;
-		
-		ck = hipEventCreate(&start);
-		ck = hipEventCreate(&stop);
-		
-		ck = hipEventRecord(start);
-		
-		shark::profiler pf(64, true);
-		
-		pf.reset();
-		
-		ck = hipMalloc(&d_a, bytes);
-		ck = hipMalloc(&d_b, bytes);
-		ck = hipMalloc(&d_c, bytes);
-		
-		pf.lap("hipMalloc");
-		
-		int threads = 256;
-		int blocks = (n + threads - 1) / threads;
-		
-		for (int iteration = 0; iteration < 20; ++iteration) {
-			pf.reset();
-			ck = hipMemcpy(d_a, h_a.data(), bytes, hipMemcpyHostToDevice);
-			ck = hipMemcpy(d_b, h_b.data(), bytes, hipMemcpyHostToDevice);
-			pf.lap("H->D");
-			
-			constexpr int repeats = 1000;
-			
-			ck = hipEventRecord(start);
-			
-			for (int i = 0; i < repeats; ++i) {
-				matadd_kernel<<<blocks, threads>>>(d_c, d_a, d_b, n);
-			}
-			
-			ck = hipGetLastError();
-			ck = hipEventRecord(stop);
-			ck = hipEventSynchronize(stop);
-			
-			float total_ms = 0.f;
-			ck = hipEventElapsedTime(&total_ms, start, stop);
-			
-			std::cout << "Average kernel: "
-			<< total_ms / repeats
-			<< " ms\n";
-			
-			pf.reset();
-			ck = hipMemcpy(h_c.data(), d_c, bytes, hipMemcpyDeviceToHost);
-			pf.lap("D->H");
-		}
-		
-		
-		std::cout << h_c[0] << std::endl;
-		
-		pf.reset();
-		ck = hipFree(d_a);
-		ck = hipFree(d_b);
-		ck = hipFree(d_c);
-		pf.lap("hipFree");
-		ck = hipEventDestroy(start);
-		ck = hipEventDestroy(stop);
-		
-	}
-	catch(std::exception& exc) {
-		std::cout << exc.what() << std::endl;
-		
-	}
-	
-	
-}
-*/
-
-/*
-#define __HIP_PLATFORM_AMD__
-#include <hip/hip_runtime.h>
-
-#include <iostream>
-#include <vector>
-
-
-__global__ void vector_add(
-	const float* a,
-	const float* b,
-	float* c,
-	int n)
-{
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	
-	if (i < n)
+public:
+	TinyTensor(const std::vector<size_t>& shape)
+	: shape_(shape)
 	{
-		c[i] = a[i] + b[i];
+		data_.resize(elements());
+		
+		ck_ = hipMalloc(&rptr_, rbytes());
+		sync_HD();
 	}
-}
+	
+	// Compiler should help me optimize it, no worry.
+	const size_t elements() const {
+		size_t elements = 1;
+		
+		for (size_t dim : shape_) {
+			elements *= dim;
+		}
+		return elements;
+	}
+	
+	const size_t rbytes() const {
+		return elements() * sizeof(float);	
+	}
+	
+	void sync_HD() {
+		ck_ = hipMemcpy(rptr_, data_.data(), rbytes(), hipMemcpyHostToDevice);
+	}
+	void sync_DH() {
+		ck_ = hipMemcpy(data_.data(), rptr_, rbytes(), hipMemcpyDeviceToHost);
+	}
+	
+	void make_all(float value) {
+		std::fill(data_.begin(), data_.end(), value);
+		sync_HD();
+	}
+	void make_rand(float begin = 0.F, float end = 1.F) {
+		for (float& x : data_) {
+			x = shark::math::random_float(begin, end);
+		}
+		sync_HD();
+	}
+	
+	float* gptr() {
+		return rptr_;
+	}
+	const float* gptr() const {
+		return rptr_;
+	}
+	const auto& shape() const {
+		return shape_;
+	}
+	
+	TinyTensor(TinyTensor&& other) noexcept
+	{
+		shape_ = std::move(other.shape_);
+		data_ = std::move(other.data_);
+		
+		rptr_ = other.rptr_;
+		other.rptr_ = nullptr;
+	}
+	
+	// copy of the object should be disabled because it may result in double free in destructor.
+	TinyTensor(const TinyTensor&) = delete;
+	TinyTensor& operator=(const TinyTensor&) = delete;
+	
+	~TinyTensor() {
+		if (rptr_) {
+			ck_ = hipFree(rptr_);
+			rptr_ = nullptr;
+		}
+	}
+private:
+	std::vector<size_t> shape_;
+	std::vector<float> data_;
+	
+	float* rptr_ = nullptr; // ROCm Pointer
+	
+	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck_; // It contains no member variables.
+};
 
 
-int main1()
+int main(int argc, char** argv)
 {
-	constexpr int N = 1024;
+	const size_t dim = 2048;
+	std::vector<size_t> shape = {dim, dim, };
+	TinyTensor A(shape);
+	TinyTensor B(shape);
+	TinyTensor C(shape);
 	
-	std::vector<float> h_a(N, 1.0f);
-	std::vector<float> h_b(N, 2.0f);
-	std::vector<float> h_c(N, 0.0f);
+	A.make_rand();
+	B.make_rand();
 	
-	
-	float* d_a;
-	float* d_b;
-	float* d_c;
-	
-	
-	hipMalloc(&d_a, N * sizeof(float));
-	hipMalloc(&d_b, N * sizeof(float));
-	hipMalloc(&d_c, N * sizeof(float));
-	
-	
-	hipMemcpy(
-		d_a,
-		h_a.data(),
-			N * sizeof(float),
-			hipMemcpyHostToDevice);
-	
-	hipMemcpy(
-		d_b,
-		h_b.data(),
-			N * sizeof(float),
-			hipMemcpyHostToDevice);
-	
-	
-	int threads = 256;
-	int blocks = (N + threads - 1) / threads;
-	
-	
-	vector_add<<<blocks, threads>>>(
-		d_a,
-		d_b,
-		d_c,
-		N);
-	
-	
-	hipDeviceSynchronize();
-	
-	
-	hipMemcpy(
-		h_c.data(),
-			d_c,
-		N * sizeof(float),
-			hipMemcpyDeviceToHost);
-	
-	
-	std::cout << "c[0] = " << h_c[0] << "\n";
-	std::cout << "c[1023] = " << h_c[1023] << "\n";
-	
-	
-	hipFree(d_a);
-	hipFree(d_b);
-	hipFree(d_c);
+	bench_tiled_matmul<32>(C.gptr(), A.gptr(), B.gptr(), dim);
+	bench_tiled_matmul<32>(C.gptr(), A.gptr(), B.gptr(), dim);
+	bench_tiled_matmul<32>(C.gptr(), A.gptr(), B.gptr(), dim);
 	
 	return 0;
 }
-*/

@@ -1,67 +1,131 @@
 # shark-lab
 
-`shark-lab` is my personal LLM learning project. It contains experiments for building and training GPT/LLaMA-style language models from scratch.
+`shark-lab` is my personal LLM learning project.
 
-This repository documents my learning process while building GPT/LLaMA-style language models from scratch. The implementation is experimental and may change as I improve it.
+`shark-lab` is an experimental LLM framework for learning and implementing
+GPT/LLaMA-style language models from scratch.
 
+The project contains model implementations, training pipelines, inference tools,
+Supervised Fine-Tuning (SFT) workflows, checkpoint conversion utilities, and
+ROCm/HIP experiments for GPU programming and performance exploration.
 
-The project currently depends on an external tokenizer.
+This repository documents my learning and engineering process while building
+LLM systems from the ground up. The implementation is experimental and may
+evolve as new features, optimizations, and experiments are added.
 
-This repository is mainly for learning, experimentation, and engineering practice, so some parts may be incomplete or changing over time.
+## Features
+
+- GPT/LLaMA-style Transformer model implementation
+- Pre-training and Supervised Fine-Tuning (SFT)
+- Custom training pipeline and checkpoint handling
+- Inference and testing tools
+- Hugging Face model conversion support
+- ROCm/HIP experiments and GPU kernel development
 
 ## Project structure
 
 ```text
 shared/
-  model.py      Model architecture
-  util.py       Common utility functions
-  format.py     File/data format helpers
+  model.py          Model architecture
+  util.py           Common utility functions
+  format.py         File and checkpoint format helpers
 
-train.py      Pre-training, Supervised fine-tuning
-infer.py    Inference/testing entry point
-convert_hf.py   Convert compatible models to the checkpoint.
+train.py            Pre-training and supervised fine-tuning
+infer.py            Inference/testing entry point
+convert_hf.py       Convert compatible Hugging Face models
 
 config/
-  360m.toml    Compatible configuration file for SmolLM2-360M-Instruct
+  360m.toml         Configuration for SmolLM2-360M-Instruct compatible models
+  collector_options.toml
 
 scripts/
-  collector.py  Conversation generation tool
-  corpus/          Corpus generation utilities
-  crawlers/        Local/private crawling tools, not intended for public release
+  collector.py      Conversation generation tools
 
 rocm/
-  shark/          A simple library
-  hip-test/       An ROCm playground
+  shark/            ROCm-related utilities
+  hip-test/         HIP kernel experiments
+````
+
+## Usage
+
+### Training
+
+```bash
+python train.py --config options.toml
 ```
 
-## Notes
+### Inference
 
-Examples
 ```bash
-python inference.py \
+python infer.py \
   --config options.toml \
-  --max-new-tokens 100 --temperature 0.8 --top-k 50
+  --max-new-tokens 100 \
+  --temperature 0.8 \
+  --top-k 50
+```
 
+### Convert Hugging Face checkpoints
+
+```bash
 python convert_hf.py \
   --config options.toml \
   --source HuggingFaceTB/SmolLM2-360M-Instruct \
   --output checkpoints/smollm2-instruct.pt
-
-python trainer.py --config options.toml
-
-# ATTENTION: RUN WITH THESE FALGS: AMD_SERIALIZE_KERNEL=3 HIP_LAUNCH_BLOCKING=1
-# IF YOU USE ROCm
-AMD_SERIALIZE_KERNEL=3 HIP_LAUNCH_BLOCKING=1 python train.py --config options.safe.big.toml
-
-python server.py --config options.toml
 ```
 
+## ROCm / HIP experiments
 
-in rocm
+`shark-lab` contains experimental ROCm code for learning GPU programming,
+kernel development, and performance optimization.
+
+The current experiments focus on understanding:
+
+* GPU execution models
+* Memory behavior
+* Kernel implementation
+* Numerical stability
+* Performance optimization
+
+Run ROCm experiments:
+
 ```bash
+cd rocm
 scons
 ./build/hip-test/hip-test
 ```
 
-CMake doesn't support Debian's package layout for system installed ROCm well currently.
-I would choose SConstruct here.
+For ROCm training runs, debugging asynchronous GPU failures may require:
+
+```bash
+AMD_SERIALIZE_KERNEL=3 HIP_LAUNCH_BLOCKING=1 \
+python train.py --config options.safe.big.toml
+```
+
+## Design notes
+
+The project intentionally avoids depending on large external training
+frameworks for core learning purposes. Many components are implemented
+directly to understand the underlying mechanisms of LLM training systems.
+
+External components are still used where appropriate, such as tokenization.
+
+## Build system
+
+The ROCm experiments currently use SCons.
+
+This choice is based on compatibility with the system-installed ROCm
+environment used during development.
+
+## Current status
+
+`shark-lab` is under active development.
+
+The project is primarily intended for:
+
+* learning LLM engineering
+* experimenting with model architectures
+* studying training systems
+* exploring GPU acceleration
+
+APIs and internal implementations may change as the project evolves.
+

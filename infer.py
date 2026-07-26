@@ -4,7 +4,7 @@ Repository: https://github.com/leaked32/shark-lab
 
 File: train.py
 
-The file test the model by calling generate of GPT directly.
+The file tests the model by calling generate of GPT directly.
 
 License: MIT
 """

@@ -1,5 +1,3 @@
-
-
 [config]
 model_url = ''
 temperature = 1.0
@@ -41,31 +39,37 @@ Generate one natural conversation that fulfills the scenario.
 case = "stress"
 enabled = true
 data = """
-
 """
+
 
 [[censored_terms]]
 case = 'dialogue'
 enabled = true
 data = [
-  "chatgpt", "openai", "language model",
-  "training data", "assistant", "user",
+  "chatbot", "AI model", "language model",
+  "training data", "system message",
+  "developer message", "assistant", "user",
   ":", "mommy", "mother",
   "father", "dad", "brother", "sister",
   "uncle", "aunt", "my dog", "pet dog",
-  "pet cat", "question continues",
-  "this question continues", "the response maintains",
-  "conversation flow", "parent",
-  "you are sensei", "generate only","anonymous", "'s next reply",
+  "pet cat",
+  "conversation continues",
+  "continue the conversation",
+  "maintain conversation flow",
+  "parent",
+  "you are sensei",
+  "generate only",
+  "anonymous",
+  "next reply",
   "choose one letter",
   "dialogue options",
   "story scenario",
   "additional information",
-  "what does sensei want to see next",
+  "what should happen next",
   "prompt",
   "hidden prompt",
   "hidden instruction",
-  "hidden instrtuctions",
+  "hidden instructions",
   "policy",
   "policies",
   "training",
@@ -73,9 +77,30 @@ data = [
 ]
 
 
+
+[[censored_terms]]
+case = 'stress'
+enabled = true
+data = [
+  ":",
+  "question continues",
+  "this question continues",
+  "the response maintains",
+  "conversation flow",
+  "'s next reply",
+  "choose one letter",
+  "dialogue options",
+  "story scenario",
+  "additional information",
+  "what does sensei want to see next",
+  "generate only",
+  "hidden prompt",
+  "hidden instruction",
+  "hidden instructions",
+]
+
+
 [restrictions]
 max_narration_score = 6
 max_actions_density = 0.3
 max_actions_only_messages = 0.5
-
-
