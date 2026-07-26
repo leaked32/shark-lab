@@ -9,6 +9,7 @@
 
 // Tiny program to test ROCm status
 // #define __HIP_DISABLE_CPP_FUNCTIONS__
+#include <cmath>
 #include <hip/amd_detail/amd_hip_runtime.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_bfloat16.h>
@@ -45,6 +46,88 @@ __global__ void same_matrix(const float* a, const float* b, int rows, int cols, 
 	}
 	
 }
+
+
+__global__ void transpose_kernel(float* o, const float* in, size_t rows, size_t cols)
+{
+	size_t row = blockIdx.y * blockDim.y + threadIdx.y;
+	size_t col = blockIdx.x * blockDim.x + threadIdx.x;
+	
+	if (row < rows && col < cols) {
+		o[col * rows + row] = in[row * cols + col];
+	}
+}
+
+__global__ void tensor_mul_scalar_kernel(float* x, float value, size_t n)
+{
+	size_t i = blockIdx.x * blockDim.x + threadIdx.x;
+	
+	if (i < n)
+		x[i] *= value;
+}
+
+// WARNING softmax requires power-of-two block
+__global__ void mat_softmax_kernel(const float* x, float* r, size_t cols)
+{
+	extern __shared__ float smem[];
+	float* reduce = smem;
+	
+	const size_t tid = threadIdx.x;
+	const size_t row = blockIdx.x;
+	const size_t block_size = blockDim.x;
+	
+	// reduce max(x)
+	float local_max = -INFINITY;
+	// flexible loader, so I can cover much larger tensor regardless of block_size
+	for (size_t i = tid; i < cols; i += block_size) {
+		local_max = std::fmaxf(local_max, x[row * cols + i]);
+	}
+	reduce[tid] = local_max;
+	__syncthreads();
+	
+	for (size_t stride = block_size / 2; stride > 0; stride /= 2) {
+		if (tid < stride) {
+			reduce[tid] = std::fmaxf(reduce[tid], reduce[tid + stride]);
+		}
+		__syncthreads();
+	}
+	
+	float max_value = reduce[0];
+	__syncthreads();
+	
+	// reduce sum(exp(x-max))
+	float local_sum = 0.f;
+	
+	for (size_t i = tid; i < cols; i += block_size) {
+		local_sum += std::expf(x[row * cols + i] - max_value);
+	}
+	reduce[tid] = local_sum;
+	__syncthreads();
+	
+	for (size_t stride = block_size / 2; stride > 0; stride >>= 1) {
+		if (tid < stride) {
+			reduce[tid] += reduce[tid + stride];
+		}
+		__syncthreads();
+	}
+	
+	float sum = reduce[0];
+	__syncthreads();
+	
+	// write softmax
+	for (size_t i = tid; i < cols; i += block_size) {
+		r[row * cols + i] = expf(x[row * cols + i] - max_value) / sum;
+	}
+}
+
+__global__ void matadd_kernel(float* c, const float* a, const float* b, int n)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx < n) {
+		c[idx] = a[idx] + b[idx];
+	}
+}
+
 
 template<int SAME_MATRIX_BLOCK = 16>
 int same_matrix_helper(const float* d_a, const float* d_b, int rows, int cols)
@@ -86,14 +169,6 @@ void print_matrix(const float* c, int rows, int cols, int rows_max, int cols_max
 		ss << "\n";
 	}
 	shark::log::info("{}", ss.str());
-}
-
-__global__ void matadd_kernel(float* c, const float* a, const float* b, int n)
-{
-	int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	if (idx < n) {
-		c[idx] = a[idx] + b[idx];
-	}
 }
 
 
@@ -513,13 +588,63 @@ public:
 		const float* w_ptr = rptr();
 		float* o_ptr = o.rptr();
 		
-		constexpr size_t col_per_thread = 4;
-		dim3 block(cols / col_per_thread);
+		constexpr size_t _block = 256;
+		constexpr size_t _col_per_thread = 4;
+		dim3 block(_block);
 		dim3 grid(rows);
-		rmsnorm_kernel<col_per_thread><<<grid, block>>>(o_ptr, x_ptr, w_ptr, rows, cols, eps);
-		/*
-		*/
+		rmsnorm_kernel<_col_per_thread><<<grid, block>>>(o_ptr, x_ptr, w_ptr, rows, cols, eps);
 		
+		return o;
+	}
+	
+	TinyTensor transpose() const
+	{
+		if (dim() != 2) {
+			shark::raise("transpose only supports 2D tensors, got dim={}", dim());
+		}
+		size_t rows = size<-2>();
+		size_t cols = size<-1>();
+		
+		TinyTensor o({cols, rows}); // flipped
+		
+		dim3 block(16, 16);
+		dim3 grid((cols + block.x - 1) / block.x, (rows + block.y - 1) / block.y);
+		transpose_kernel<<<grid, block>>>(o.rptr(), rptr(), rows, cols);
+		
+		ck_ = hipGetLastError();
+		ck_ = hipDeviceSynchronize();
+		
+		return o;
+	}
+	
+	constexpr size_t numel() const
+	{
+		size_t n = 1;
+		for (size_t s : shape()) {
+			n *= s;
+		}
+		return n;
+	}
+	
+	void multiply_(float value)
+	{
+		size_t n = numel();
+		dim3 block(256);
+		dim3 grid((n + block.x - 1) / block.x);
+		tensor_mul_scalar_kernel<<<grid, block>>>(rptr(), value, n);
+		
+		ck_ = hipGetLastError();
+		ck_ = hipDeviceSynchronize();
+	}
+	
+	TinyTensor softmax() const
+	{
+		TinyTensor o(shape());
+		
+		dim3 block(256);
+		dim3 grid(size<-2>());
+		
+		mat_softmax_kernel<<<grid, block, sizeof(float) * block.x>>>(rptr(), o.rptr(), size<-1>());
 		return o;
 	}
 private:
@@ -531,6 +656,22 @@ private:
 	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck_; // It contains no member variables.
 };
 
+TinyTensor attention(const TinyTensor& q, const TinyTensor& k, const TinyTensor& v) {
+	if (q.size<-1>() != k.size<-1>()) {
+		shark::raise("Q and K hidden mismatch");
+	}
+	
+	if (k.size<-2>() != v.size<-2>()) {
+		shark::raise("K and V sequence mismatch");
+	}
+	
+	auto s = q.matmul(k.transpose());
+	s.multiply_(1.F / std::sqrt(static_cast<float>(q.size<-1>())));
+	
+	auto p = s.softmax();
+	auto o = p.matmul(v);
+	return o;
+}
 
 int main(int argc, char** argv)
 {
