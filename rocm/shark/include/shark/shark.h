@@ -239,7 +239,7 @@ auto einvoke(Types &&...Args)
 template<typename T, T good>
 struct rcheck
 {
-	void check(T v) {
+	void check(T v) const {
 		if (v != good) {
 			log::debug("Invocation of function has failed: {} {:#x}",
 					   SHARK_FUNCTION, static_cast<unsigned long>(v));
@@ -247,7 +247,7 @@ struct rcheck
 		}
 	}
 	template<typename... Types>
-	void operator=(Types&& ...values) {
+	void operator=(Types&& ...values) const {
 		check(std::forward<Types>(values)...);
 	}
 };

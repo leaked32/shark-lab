@@ -47,17 +47,31 @@ __global__ void same_matrix(const float* a, const float* b, int rows, int cols, 
 	
 }
 
-int same_matrix_helper(dim3 grid, dim3 block, 
-					   const float* d_a, const float* d_b, int rows, int cols) {
+template<int SAME_MATRIX_BLOCK = 16>
+int same_matrix_helper(const float* d_a, const float* d_b, int rows, int cols)
+{
 	int diff_count = 0;
 	int* d_diff_count = nullptr;
 	
 	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
+	
 	ck = hipMalloc(&d_diff_count, sizeof(int));
 	ck = hipMemcpy(d_diff_count, &diff_count, sizeof(diff_count), hipMemcpyHostToDevice);
+	
+	dim3 block(SAME_MATRIX_BLOCK, SAME_MATRIX_BLOCK);
+	dim3 grid(
+		(cols + block.x - 1) / block.x,
+			  (rows + block.y - 1) / block.y
+	);
+	
 	same_matrix<<<grid, block>>>(d_a, d_b, rows, cols, d_diff_count);
+	
+	ck = hipGetLastError();
 	ck = hipDeviceSynchronize();
+	
 	ck = hipMemcpy(&diff_count, d_diff_count, sizeof(diff_count), hipMemcpyDeviceToHost);
+	
+	ck = hipFree(d_diff_count);
 	
 	return diff_count;
 }
@@ -107,6 +121,92 @@ __global__ void matmul_kernel(
 }
 
 
+template<int _block_dim, int _thread_dim>
+__global__ void matmul_kernel_1(
+	float* c, const float* a, const float* b, int dim)
+{
+	constexpr int _merged_dim = _block_dim * _thread_dim;
+	
+	__shared__ float a_shared[_merged_dim][_merged_dim /*+ 1 BANK PADDING*/];
+	__shared__ float b_shared[_merged_dim][_merged_dim /*+ 1 BANK PADDING*/];
+	
+	
+	// __syncthreads();
+	int row = blockIdx.y * _merged_dim + threadIdx.y * _thread_dim;
+	int col = blockIdx.x * _merged_dim + threadIdx.x * _thread_dim;
+	// block level coordinates: threadIdx.y, threadIdx.x
+	// grid level coordinates: row, col
+	
+	float sum[_thread_dim][_thread_dim] = { };
+	// sum for current position, each thread computes only one number of output.
+	
+	// loop to make a thick ROPE through A and B matrices respectively
+	// notice we need numbers from A and B exceeds currently blocks.
+	// From __global__ (VRAM) to __shared__ (LDS)
+	for (int tile = 0; tile < dim; tile += _merged_dim) {
+		// load a tile of A
+		for (int local_row = 0; local_row < _thread_dim; ++local_row) {
+			for (int local_col = 0; local_col < _thread_dim; ++local_col) {
+				int row_s_a = local_row + row;
+				int col_s_a = tile + threadIdx.x * _thread_dim + local_col;
+				if (row_s_a < dim && col_s_a < dim) {
+					// check whether it's still in matrix
+					// `col` is irrelevant here because A does not use the output column
+					
+					a_shared[threadIdx.y * _thread_dim + local_row]
+							[threadIdx.x * _thread_dim + local_col] = 
+						a[row_s_a * dim + col_s_a];
+				} else {
+					a_shared[threadIdx.y * _thread_dim + local_row]
+							[threadIdx.x * _thread_dim + local_col] = 0.f;
+					// a_shared[threadIdx.y][threadIdx.x] = 0.f;
+				}
+			}
+		}
+		
+		// load a tile of B
+		for (int local_row = 0; local_row < _thread_dim; ++local_row) {
+			for (int local_col = 0; local_col < _thread_dim; ++local_col) {
+				int row_s_b = tile + threadIdx.y * _thread_dim + local_row;
+				int col_s_b = col + local_col;
+				if (row_s_b < dim && col_s_b < dim) {
+					b_shared[threadIdx.y * _thread_dim + local_row]
+							[threadIdx.x * _thread_dim + local_col] =
+						b[row_s_b * dim + col_s_b];
+				} else {
+					b_shared[threadIdx.y * _thread_dim + local_row]
+							[threadIdx.x * _thread_dim + local_col] = 0.f;
+					// b_shared[threadIdx.y][threadIdx.x] = 0.f;
+				}
+			}
+		}
+		__syncthreads();
+		
+		// partial matrix multiplication results.
+		for (int k = 0; k < _merged_dim; ++k) {
+			for (int local_row = 0; local_row < _thread_dim; ++local_row) {
+				for (int local_col = 0; local_col < _thread_dim; ++local_col) {
+					sum[local_row][local_col] +=
+						a_shared[threadIdx.y * _thread_dim + local_row][k] * 
+						b_shared[k][threadIdx.x * _thread_dim + local_col];
+				}
+			}
+		}
+		
+		__syncthreads();
+	}
+	
+	for (int local_row = 0; local_row < _thread_dim; ++local_row) {
+		for (int local_col = 0; local_col < _thread_dim; ++local_col) {
+			if (row + local_row < dim && col + local_col < dim) {
+				c[(row + local_row) * dim + col + local_col] = sum[local_row][local_col];
+			}
+		}
+	}
+}
+
+
+
 template<int _block_dim>
 __global__ void matmul_kernel_1(
 	float* c, const float* a, const float* b, int dim)
@@ -126,6 +226,7 @@ __global__ void matmul_kernel_1(
 	
 	// loop to make a thick ROPE through A and B matrices respectively
 	// notice we need numbers from A and B exceeds currently blocks.
+	// From __global__ (VRAM) to __shared__ (LDS)
 	for (int tile = 0; tile < dim; tile += _block_dim) {
 		// load a tile of A
 		int col_s_a = tile + threadIdx.x;
@@ -162,7 +263,6 @@ __global__ void matmul_kernel_1(
 }
 
 
-
 // ------------------------------------------------------------
 // Generic benchmark helper
 // ------------------------------------------------------------
@@ -180,12 +280,14 @@ float bench_kernel(
 	const std::string& name, std::function<void()> launcher,
 	int warmup = 10, int repeats = 100)
 {
+	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
 	// warmup
 	for (int i = 0; i < warmup; ++i) {
 		launcher();
+		
+		ck = hipGetLastError();
 	}
 	
-	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
 	
 	ck = hipDeviceSynchronize();
 	
@@ -199,6 +301,8 @@ float bench_kernel(
 	
 	for (int i = 0; i < repeats; ++i) {
 		launcher();
+		
+		// ck = hipGetLastError();
 	}
 	
 	ck = hipEventRecord(stop);
@@ -256,16 +360,32 @@ float bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim
 	
 	float avg_ms = bench_kernel(
 		"shared tiled matmul",
-		[d_c, d_a, d_b, dim, grid, block]
-		{
-			
+		[d_c, d_a, d_b, dim, grid, block] {
 			matmul_kernel_1<BLOCK><<<grid, block>>>(d_c, d_a, d_b, dim);
 		}
 	);
-	
-	
 	bench_report(2ull * dim * dim * dim, grid.y, grid.x, block.y, block.x, avg_ms);
+	return avg_ms;
+}
+
+template<int BLOCK, int NPT>
+float bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim)
+{
+	constexpr int TILE = BLOCK * NPT;
 	
+	dim3 block(BLOCK, BLOCK);
+	dim3 grid(
+		(dim + TILE - 1) / TILE,
+			  (dim + TILE - 1) / TILE
+	);
+	
+	float avg_ms = bench_kernel(
+		"shared tiled matmul",
+		[d_c, d_a, d_b, dim, grid, block] {
+			matmul_kernel_1<BLOCK, NPT><<<grid, block>>>(d_c, d_a, d_b, dim);
+		}
+	);
+	bench_report(2ull * dim * dim * dim, grid.y, grid.x, block.y, block.x, avg_ms);
 	return avg_ms;
 }
 
@@ -278,7 +398,7 @@ public:
 		data_.resize(elements());
 		
 		ck_ = hipMalloc(&rptr_, rbytes());
-		sync_HD();
+		// sync_HD();
 	}
 	
 	// Compiler should help me optimize it, no worry.
@@ -313,14 +433,21 @@ public:
 		sync_HD();
 	}
 	
-	float* gptr() {
+	float* rptr() {
 		return rptr_;
 	}
-	const float* gptr() const {
+	const float* rptr() const {
 		return rptr_;
 	}
 	const auto& shape() const {
 		return shape_;
+	}
+	
+	TinyTensor clone() const {
+		TinyTensor ntt(shape());
+		ck_ = hipMemcpy(ntt.rptr_, rptr_, rbytes(), hipMemcpyDeviceToDevice);
+		
+		return ntt;
 	}
 	
 	TinyTensor(TinyTensor&& other) noexcept
@@ -341,6 +468,11 @@ public:
 			ck_ = hipFree(rptr_);
 			rptr_ = nullptr;
 		}
+	}
+	
+	bool operator==(const TinyTensor& other) const {
+		int wrong = same_matrix_helper(rptr(), other.rptr(), 2048, 2048);
+		return wrong == 0;
 	}
 private:
 	std::vector<size_t> shape_;
@@ -363,9 +495,15 @@ int main(int argc, char** argv)
 	A.make_rand();
 	B.make_rand();
 	
-	bench_tiled_matmul<32>(C.gptr(), A.gptr(), B.gptr(), dim);
-	bench_tiled_matmul<32>(C.gptr(), A.gptr(), B.gptr(), dim);
-	bench_tiled_matmul<32>(C.gptr(), A.gptr(), B.gptr(), dim);
+	bench_tiled_matmul<16,2>(C.rptr(), A.rptr(), B.rptr(), dim);
+	
+	auto D = C.clone();
+	
+	bench_tiled_matmul<32>(C.rptr(), A.rptr(), B.rptr(), dim);
+	
+	shark::log::info("Equal: {}", C == D);
+	// bench_tiled_matmul<16,2>(C.gptr(), A.gptr(), B.gptr(), dim);
+	// bench_tiled_matmul<32>(C.gptr(), A.gptr(), B.gptr(), dim);
 	
 	return 0;
 }
