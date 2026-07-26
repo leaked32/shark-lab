@@ -10,7 +10,6 @@
 // Tiny program to test ROCm status
 // #define __HIP_DISABLE_CPP_FUNCTIONS__
 #include <hip/amd_detail/amd_hip_runtime.h>
-#include <hip/driver_types.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_bf16.h>
@@ -97,35 +96,69 @@ __global__ void matadd_kernel(float* c, const float* a, const float* b, int n)
 	}
 }
 
-// constexpr int row = 8;
-// constexpr int col = 8;
 
-template<int _block_dim>
-__global__ void matmul_kernel(
-	float* c, const float* a, const float* b, int dim)
+template<size_t _thread_dim>
+__global__ void rmsnorm_kernel(
+	float* o, const float* x, const float* weights, 
+	size_t rows, size_t cols, float eps)
 {
-	int row = blockIdx.y * _block_dim + threadIdx.y;
-	int col = blockIdx.x * _block_dim + threadIdx.x;
+	// constexpr int _merged_dim = _block_dim * _thread_dim;
+	// int row = blockIdx.y * _merged_dim + threadIdx.y * _thread_dim;
+	// There's no way unless I use __global__ to support different blocks.
+	// Disable it now.
+	size_t row = blockIdx.x;
+	size_t col = threadIdx.x * _thread_dim;
 	
-	// __syncthreads();
-	if (dim <= row || dim <= col) {
-		return;
+	__shared__ float sum;
+	if (col == 0) {
+		sum = 0.F;
 	}
-	float sum = 0.f;
+	__syncthreads();
 	
-	for (int k = 0; k < dim; ++k) {
-		sum += a[row * dim + k] * b[k * dim + col];
+	float local_sum = 0.F;
+	if constexpr (_thread_dim == 1) {
+		if (col < cols) {
+			float tmp = x[row * cols + col] * x[row * cols + col];
+			atomicAdd(&sum, tmp);
+		}
+	} else {
+		for (size_t i = 0; i < _thread_dim; ++i) {
+			size_t tmp = col + i;
+			if (tmp < cols) {
+				float tmp1 = x[row * cols + tmp] * x[row * cols + tmp];
+				local_sum += tmp1;
+			}
+		}
+		atomicAdd(&sum, local_sum);
 	}
 	
-	c[row * dim + col] = sum;
+	__syncthreads();
+	__shared__ float rms;
+	if (threadIdx.x == 0) {
+		rms = std::sqrt(sum / cols + eps);
+	}
+	__syncthreads();
+	if constexpr (_thread_dim == 1) {
+		if (col < cols) {
+			o[row * cols + col] = x[row * cols + col] / rms * weights[col];
+		}
+	} else {
+		for (size_t i = 0; i < _thread_dim; ++i) {
+			size_t tmp = col + i;
+			if (tmp < cols) {
+				o[row * cols + tmp] = x[row * cols + tmp] / rms * weights[tmp];
+			}
+		}
+	}
 }
+	
 
-
-template<int _block_dim, int _thread_dim>
-__global__ void matmul_kernel_1(
-	float* c, const float* a, const float* b, int dim)
+template<size_t _block_dim, size_t _thread_dim>
+__global__ void matmul_kernel_2(
+	float* c, const float* a, const float* b,
+	size_t rows, size_t inner, size_t cols)
 {
-	constexpr int _merged_dim = _block_dim * _thread_dim;
+	constexpr size_t _merged_dim = _block_dim * _thread_dim;
 	
 	__shared__ float a_shared[_merged_dim][_merged_dim /*+ 1 BANK PADDING*/];
 	__shared__ float b_shared[_merged_dim][_merged_dim /*+ 1 BANK PADDING*/];
@@ -143,19 +176,19 @@ __global__ void matmul_kernel_1(
 	// loop to make a thick ROPE through A and B matrices respectively
 	// notice we need numbers from A and B exceeds currently blocks.
 	// From __global__ (VRAM) to __shared__ (LDS)
-	for (int tile = 0; tile < dim; tile += _merged_dim) {
+	for (int tile = 0; tile < inner; tile += _merged_dim) {
 		// load a tile of A
 		for (int local_row = 0; local_row < _thread_dim; ++local_row) {
 			for (int local_col = 0; local_col < _thread_dim; ++local_col) {
 				int row_s_a = local_row + row;
 				int col_s_a = tile + threadIdx.x * _thread_dim + local_col;
-				if (row_s_a < dim && col_s_a < dim) {
+				if (row_s_a < rows && col_s_a < inner) {
 					// check whether it's still in matrix
 					// `col` is irrelevant here because A does not use the output column
 					
 					a_shared[threadIdx.y * _thread_dim + local_row]
 							[threadIdx.x * _thread_dim + local_col] = 
-						a[row_s_a * dim + col_s_a];
+						a[row_s_a * inner + col_s_a];
 				} else {
 					a_shared[threadIdx.y * _thread_dim + local_row]
 							[threadIdx.x * _thread_dim + local_col] = 0.f;
@@ -169,10 +202,10 @@ __global__ void matmul_kernel_1(
 			for (int local_col = 0; local_col < _thread_dim; ++local_col) {
 				int row_s_b = tile + threadIdx.y * _thread_dim + local_row;
 				int col_s_b = col + local_col;
-				if (row_s_b < dim && col_s_b < dim) {
+				if (row_s_b < inner && col_s_b < cols) {
 					b_shared[threadIdx.y * _thread_dim + local_row]
 							[threadIdx.x * _thread_dim + local_col] =
-						b[row_s_b * dim + col_s_b];
+						b[row_s_b * cols + col_s_b];
 				} else {
 					b_shared[threadIdx.y * _thread_dim + local_row]
 							[threadIdx.x * _thread_dim + local_col] = 0.f;
@@ -198,67 +231,10 @@ __global__ void matmul_kernel_1(
 	
 	for (int local_row = 0; local_row < _thread_dim; ++local_row) {
 		for (int local_col = 0; local_col < _thread_dim; ++local_col) {
-			if (row + local_row < dim && col + local_col < dim) {
-				c[(row + local_row) * dim + col + local_col] = sum[local_row][local_col];
+			if (row + local_row < rows && col + local_col < cols) {
+				c[(row + local_row) * cols + col + local_col] = sum[local_row][local_col];
 			}
 		}
-	}
-}
-
-
-
-template<int _block_dim>
-__global__ void matmul_kernel_1(
-	float* c, const float* a, const float* b, int dim)
-{
-	__shared__ float a_shared[_block_dim][_block_dim];
-	__shared__ float b_shared[_block_dim][_block_dim];
-	
-	
-	// __syncthreads();
-	int row = blockIdx.y * _block_dim + threadIdx.y;
-	int col = blockIdx.x * _block_dim + threadIdx.x;
-	// block level coordinates: threadIdx.y, threadIdx.x
-	// grid level coordinates: row, col
-	
-	float sum = 0.0f;
-	// sum for current position, each thread computes only one number of output.
-	
-	// loop to make a thick ROPE through A and B matrices respectively
-	// notice we need numbers from A and B exceeds currently blocks.
-	// From __global__ (VRAM) to __shared__ (LDS)
-	for (int tile = 0; tile < dim; tile += _block_dim) {
-		// load a tile of A
-		int col_s_a = tile + threadIdx.x;
-		if (row < dim && col_s_a < dim) {
-			// check whether it's still in matrix
-			// `col` is irrelevant here because A does not use the output column
-			
-			a_shared[threadIdx.y][threadIdx.x] = a[row * dim + col_s_a];
-		} else {
-			a_shared[threadIdx.y][threadIdx.x] = 0.f;
-		}
-		
-		// load a tile of B
-		int row_s_b = tile + threadIdx.y;
-		if (row_s_b < dim && col < dim) {
-			b_shared[threadIdx.y][threadIdx.x] = b[row_s_b * dim + col];
-		} else {
-			b_shared[threadIdx.y][threadIdx.x] = 0.f;
-		}
-		
-		__syncthreads();
-		
-		// partial matrix multiplication results.
-		for (int k = 0; k < _block_dim; ++k) {
-			sum += a_shared[threadIdx.y][k] * b_shared[k][threadIdx.x];
-		}
-		
-		__syncthreads();
-	}
-	
-	if (row < dim && col < dim) {
-		c[row * dim + col] = sum;
 	}
 }
 
@@ -278,7 +254,7 @@ struct BenchResult {
 // template<int _block_dim>
 float bench_kernel(
 	const std::string& name, std::function<void()> launcher,
-	int warmup = 10, int repeats = 100)
+	int warmup = 2, int repeats = 10)
 {
 	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
 	// warmup
@@ -336,44 +312,13 @@ void bench_report(size_t operations,
 // Convenient benchmark functions
 // ------------------------------------------------------------
 
-template<int BLOCK>
-float bench_naive_matmul(float* d_c, const float* d_a, const float* d_b, int dim)
-{
-	return bench_kernel(
-		"naive matmul",
-		[d_c, d_a, d_b, dim]
-		{
-			dim3 block(BLOCK, BLOCK);
-			dim3 grid((dim + BLOCK - 1) / BLOCK, (dim + BLOCK - 1) / BLOCK);
-			
-			matmul_kernel<BLOCK><<<grid, block>>>(d_c, d_a, d_b, dim);
-		}
-	);
-}
 
-
-template<int BLOCK>
+template<int _block_dim, int _thread_dim>
 float bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim)
 {
-	dim3 block(BLOCK, BLOCK);
-	dim3 grid((dim + BLOCK - 1) / BLOCK, (dim + BLOCK - 1) / BLOCK);
+	constexpr int TILE = _block_dim * _thread_dim;
 	
-	float avg_ms = bench_kernel(
-		"shared tiled matmul",
-		[d_c, d_a, d_b, dim, grid, block] {
-			matmul_kernel_1<BLOCK><<<grid, block>>>(d_c, d_a, d_b, dim);
-		}
-	);
-	bench_report(2ull * dim * dim * dim, grid.y, grid.x, block.y, block.x, avg_ms);
-	return avg_ms;
-}
-
-template<int BLOCK, int NPT>
-float bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim)
-{
-	constexpr int TILE = BLOCK * NPT;
-	
-	dim3 block(BLOCK, BLOCK);
+	dim3 block(_block_dim, _block_dim);
 	dim3 grid(
 		(dim + TILE - 1) / TILE,
 			  (dim + TILE - 1) / TILE
@@ -382,7 +327,8 @@ float bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim
 	float avg_ms = bench_kernel(
 		"shared tiled matmul",
 		[d_c, d_a, d_b, dim, grid, block] {
-			matmul_kernel_1<BLOCK, NPT><<<grid, block>>>(d_c, d_a, d_b, dim);
+			matmul_kernel_2<_block_dim, _thread_dim><<<grid, block>>>
+				(d_c, d_a, d_b, dim, dim, dim);
 		}
 	);
 	bench_report(2ull * dim * dim * dim, grid.y, grid.x, block.y, block.x, avg_ms);
@@ -392,7 +338,7 @@ float bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim
 class TinyTensor
 {
 public:
-	TinyTensor(const std::vector<size_t>& shape)
+	constexpr TinyTensor(const std::vector<size_t>& shape)
 	: shape_(shape)
 	{
 		data_.resize(elements());
@@ -470,9 +416,111 @@ public:
 		}
 	}
 	
-	bool operator==(const TinyTensor& other) const {
-		int wrong = same_matrix_helper(rptr(), other.rptr(), 2048, 2048);
+	template<int _block_dim = 16, int _thread_dim = 2>
+	TinyTensor matmul(const TinyTensor& other) const {
+		size_t rows = size<-2>();
+		size_t inner = size<-1>();
+		size_t cols = other.size<-1>();
+		
+		if (inner != other.size<-2>()) {
+			shark::raise("matmul is invalid for: {}x{} {}x{}",
+				rows, inner, other.size<-2>(), cols);
+		}
+		TinyTensor C({rows, cols});
+		
+		dim3 block(_block_dim, _block_dim);
+		constexpr int TILE = _block_dim * _thread_dim;
+		dim3 grid((cols + TILE - 1) / TILE, (rows + TILE - 1) / TILE);
+		
+		matmul_kernel_2<_block_dim, _thread_dim><<<grid, block>>>(
+			C.rptr(), rptr(), other.rptr(), rows, inner, cols);
+		ck_ = hipGetLastError();
+		ck_ = hipDeviceSynchronize();
+		return C;
+	}
+	
+	bool operator==(const TinyTensor& other) const
+	{
+		if (shape_ != other.shape_)
+			return false;
+		
+		int rows = shape_[shape_.size()-2];
+		int cols = shape_[shape_.size()-1];
+		
+		int wrong = same_matrix_helper(rptr(), other.rptr(), rows, cols);
+		
 		return wrong == 0;
+	}
+	
+	template<int64_t pos>
+	constexpr size_t size() const {
+		if constexpr (pos >= 0) {
+			return shape()[pos];
+		} else {
+			return shape()[shape().size() + pos];
+		}
+	}
+	
+	constexpr size_t dim() const { return shape().size(); }
+	
+	TinyTensor rmsnorm_cpu(const TinyTensor& x, float eps = 1e-5f) const
+	{
+		size_t rows = x.size<-2>();
+		size_t cols = x.size<-1>();
+		
+		TinyTensor o({rows, cols});
+		
+		const float* x_ptr = x.data_.data();
+		const float* w_ptr = data_.data();
+		float* o_ptr = o.data_.data();
+		
+		for (size_t j = 0; j < rows; ++j) {
+			float s = 0.f;
+			
+			for (size_t i = 0; i < cols; ++i) {
+				float v = x_ptr[j * cols + i];
+				s += v * v;
+			}
+			
+			float m = sqrtf(s / cols + eps);
+			
+			for (size_t i = 0; i < cols; ++i) {
+				o_ptr[j * cols + i] =
+				x_ptr[j * cols + i] / m * w_ptr[i];
+			}
+		}
+		
+		o.sync_HD();
+		return o;
+	}
+	
+	
+	TinyTensor rmsnorm(const TinyTensor& x, float eps = 1e-5f) const
+	{
+		size_t rows = x.size<-2>();
+		size_t cols = x.size<-1>();
+		
+		if (dim() != 1 || size<0>() != cols) {
+			shark::raise(
+				"rmsnorm weight mismatch: input cols={}, weight={}, dim={}",
+				cols, size<0>(), dim()
+			);
+		}
+		// TODO: sync device -> host if rptr() is GPU memory
+		// This version assumes CPU-accessible pointers.
+		TinyTensor o({rows, cols});
+		const float* x_ptr = x.rptr();
+		const float* w_ptr = rptr();
+		float* o_ptr = o.rptr();
+		
+		constexpr size_t col_per_thread = 4;
+		dim3 block(cols / col_per_thread);
+		dim3 grid(rows);
+		rmsnorm_kernel<col_per_thread><<<grid, block>>>(o_ptr, x_ptr, w_ptr, rows, cols, eps);
+		/*
+		*/
+		
+		return o;
 	}
 private:
 	std::vector<size_t> shape_;
@@ -486,24 +534,38 @@ private:
 
 int main(int argc, char** argv)
 {
+	/*
+	// Matrix multiplication
 	const size_t dim = 2048;
-	std::vector<size_t> shape = {dim, dim, };
+	std::vector<size_t> shape = { dim, dim, };
 	TinyTensor A(shape);
 	TinyTensor B(shape);
-	TinyTensor C(shape);
+	// TinyTensor C(shape);
 	
 	A.make_rand();
 	B.make_rand();
 	
-	bench_tiled_matmul<16,2>(C.rptr(), A.rptr(), B.rptr(), dim);
+	auto C = A.matmul(B);
 	
 	auto D = C.clone();
 	
-	bench_tiled_matmul<32>(C.rptr(), A.rptr(), B.rptr(), dim);
+	bench_tiled_matmul<16,2>(C.rptr(), A.rptr(), B.rptr(), dim);
 	
 	shark::log::info("Equal: {}", C == D);
 	// bench_tiled_matmul<16,2>(C.gptr(), A.gptr(), B.gptr(), dim);
 	// bench_tiled_matmul<32>(C.gptr(), A.gptr(), B.gptr(), dim);
+	*/
+	
+	const size_t dim = 2048;
+	TinyTensor A( { dim, dim, });
+	TinyTensor B( { dim, } );
+	A.make_rand();
+	B.make_rand();
+	
+	auto C = B.rmsnorm(A);
+	auto D = B.rmsnorm_cpu(A);
+	
+	shark::log::info("Equal: {}", C == D);
 	
 	return 0;
 }
