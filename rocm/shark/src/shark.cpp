@@ -10,7 +10,7 @@
 #include <boost/json/serialize.hpp>
 #include <fstream>
 
-#include "shark/shark.h"
+#include "shark/shark.hpp"
 
 void shark::forcely_print_vector(const std::vector<std::string> &input) {
 

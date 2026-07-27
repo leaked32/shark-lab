@@ -10,7 +10,6 @@
 // Tiny program to test ROCm status
 // #define __HIP_DISABLE_CPP_FUNCTIONS__
 #include <cmath>
-#include <hip/amd_detail/amd_hip_runtime.h>
 #include <hip/hip_runtime.h>
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_bf16.h>
@@ -20,7 +19,7 @@
 #include <iostream>
 #include <iomanip>
 
-#include "shark/shark.h"
+#include "shark/shark.hpp"
 
 __global__ void same_matrix(const float* a, const float* b, int rows, int cols, int* diff_count)
 {
@@ -47,14 +46,67 @@ __global__ void same_matrix(const float* a, const float* b, int rows, int cols, 
 	
 }
 
-
-__global__ void transpose_kernel(float* o, const float* in, size_t rows, size_t cols)
+// template<size_t>
+__global__ void permute_kernel(
+	float* out, const float* in,
+	const size_t* in_shape, const size_t* perm,
+	size_t mat_dim, size_t n_elements)
 {
-	size_t row = blockIdx.y * blockDim.y + threadIdx.y;
-	size_t col = blockIdx.x * blockDim.x + threadIdx.x;
+	size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= n_elements) {
+		return;
+	}
 	
-	if (row < rows && col < cols) {
-		o[col * rows + row] = in[row * cols + col];
+	size_t tmp = idx;
+	size_t out_coord[16] = { }; // it should be very sufficient so far
+	for (size_t i = mat_dim; i-- > 0; ) {
+		out_coord[i] = tmp % in_shape[perm[i]];
+		tmp /= in_shape[perm[i]];
+	}
+	
+	size_t in_coord[16] = { };
+	for (size_t i = mat_dim; i-- > 0; ) {
+		in_coord[perm[i]] = out_coord[i];
+	}
+	
+	// input coordinates -> linear input index
+	size_t in_idx = 0;
+	size_t stride = 1;
+	
+	for (size_t i = mat_dim; i-- > 0; ) {
+		in_idx += in_coord[i] * stride;
+		stride *= in_shape[i];
+	}
+	
+	out[idx] = in[in_idx];
+}
+
+template<int TILE = 32>
+__global__ void transpose_tiled_kernel(
+	float* __restrict__ out,
+	const float* __restrict__ in,
+	size_t rows, size_t cols)
+{
+	__shared__ float tile[TILE][TILE + 1];
+	
+	size_t x = blockIdx.x * TILE + threadIdx.x;
+	size_t y = blockIdx.y * TILE + threadIdx.y;
+	
+	
+	if (x < cols && y < rows) {
+		tile[threadIdx.y][threadIdx.x] = in[y * cols + x];
+	}
+	
+	__syncthreads();
+	
+	
+	size_t trans_x = blockIdx.y * TILE + threadIdx.x;
+	size_t trans_y = blockIdx.x * TILE + threadIdx.y;
+	
+	
+	if (trans_x < rows && trans_y < cols) {
+		out[trans_y * rows + trans_x] =
+		tile[threadIdx.x][threadIdx.y];
 	}
 }
 
@@ -230,7 +282,7 @@ __global__ void rmsnorm_kernel(
 
 template<size_t _block_dim, size_t _thread_dim>
 __global__ void matmul_kernel_2(
-	float* c, const float* a, const float* b,
+	float* o, const float* a, const float* b,
 	size_t rows, size_t inner, size_t cols)
 {
 	constexpr size_t _merged_dim = _block_dim * _thread_dim;
@@ -307,12 +359,99 @@ __global__ void matmul_kernel_2(
 	for (int local_row = 0; local_row < _thread_dim; ++local_row) {
 		for (int local_col = 0; local_col < _thread_dim; ++local_col) {
 			if (row + local_row < rows && col + local_col < cols) {
-				c[(row + local_row) * cols + col + local_col] = sum[local_row][local_col];
+				o[(row + local_row) * cols + col + local_col] = sum[local_row][local_col];
 			}
 		}
 	}
 }
 
+template<size_t _block_dim, size_t _thread_dim>
+__global__ void batched_matmul_kernel(
+	float* o, const float* a, const float* b,
+	size_t batch, size_t rows, size_t inner, size_t cols, bool b_batched)
+{
+	constexpr size_t _merged_dim = _block_dim * _thread_dim;
+	
+	__shared__ float a_shared[_merged_dim][_merged_dim];
+	__shared__ float b_shared[_merged_dim][_merged_dim];
+	
+	size_t batch_idx = blockIdx.z;
+	
+	size_t row = blockIdx.y * _merged_dim + threadIdx.y * _thread_dim;
+	size_t col = blockIdx.x * _merged_dim + threadIdx.x * _thread_dim;
+	
+	size_t o_offset = batch_idx * rows * cols;
+	size_t a_offset = batch_idx * rows * inner;
+	size_t b_offset = b_batched ? batch_idx * inner * cols : 0;
+	
+	float sum[_thread_dim][_thread_dim] = { };
+	
+	for (size_t tile = 0; tile < inner; tile += _merged_dim) {
+		
+		// load a tile of A
+		for (size_t local_row = 0; local_row < _thread_dim; ++local_row) {
+			for (size_t local_col = 0; local_col < _thread_dim; ++local_col) {
+				
+				size_t row_s_a = row + local_row;
+				size_t col_s_a = tile + threadIdx.x * _thread_dim + local_col;
+				
+				if (row_s_a < rows && col_s_a < inner) {
+					a_shared[threadIdx.y * _thread_dim + local_row]
+							[threadIdx.x * _thread_dim + local_col] =
+							a[a_offset + row_s_a * inner + col_s_a];
+				} else {
+					a_shared[threadIdx.y * _thread_dim + local_row]
+							[threadIdx.x * _thread_dim + local_col] = 0.f;
+				}
+			}
+		}
+		
+		// load a tile of B
+		for (size_t local_row = 0; local_row < _thread_dim; ++local_row) {
+			for (size_t local_col = 0; local_col < _thread_dim; ++local_col) {
+				
+				size_t row_s_b = tile + threadIdx.y * _thread_dim + local_row;
+				size_t col_s_b = col + local_col;
+				
+				if (row_s_b < inner && col_s_b < cols) {
+					b_shared[threadIdx.y * _thread_dim + local_row]
+							[threadIdx.x * _thread_dim + local_col] =
+							b[b_offset + row_s_b * cols + col_s_b];
+				} else {
+					b_shared[threadIdx.y * _thread_dim + local_row]
+							[threadIdx.x * _thread_dim + local_col] = 0.f;
+				}
+			}
+		}
+		
+		__syncthreads();
+		
+		for (size_t k = 0; k < _merged_dim; ++k) {
+			for (size_t local_row = 0; local_row < _thread_dim; ++local_row) {
+				for (size_t local_col = 0; local_col < _thread_dim; ++local_col) {
+					
+					sum[local_row][local_col] +=
+					a_shared[threadIdx.y * _thread_dim + local_row][k] *
+					b_shared[k][threadIdx.x * _thread_dim + local_col];
+				}
+			}
+		}
+		
+		__syncthreads();
+	}
+	
+	for (size_t local_row = 0; local_row < _thread_dim; ++local_row) {
+		for (size_t local_col = 0; local_col < _thread_dim; ++local_col) {
+			
+			size_t row_o = row + local_row;
+			size_t col_o = col + local_col;
+			
+			if (row_o < rows && col_o < cols) {
+				o[o_offset + row_o * cols + col_o] = sum[local_row][local_col];
+			}
+		}
+	}
+}
 
 // ------------------------------------------------------------
 // Generic benchmark helper
@@ -410,6 +549,7 @@ float bench_tiled_matmul(float* d_c, const float* d_a, const float* d_b, int dim
 	return avg_ms;
 }
 
+
 class TinyTensor
 {
 public:
@@ -491,8 +631,9 @@ public:
 		}
 	}
 	
+	// this @ other
 	template<int _block_dim = 16, int _thread_dim = 2>
-	TinyTensor matmul(const TinyTensor& other) const {
+	TinyTensor matmul_2(const TinyTensor& other) const {
 		size_t rows = size<-2>();
 		size_t inner = size<-1>();
 		size_t cols = other.size<-1>();
@@ -511,6 +652,48 @@ public:
 			C.rptr(), rptr(), other.rptr(), rows, inner, cols);
 		ck_ = hipGetLastError();
 		ck_ = hipDeviceSynchronize();
+		return C;
+	}
+	
+	template<int _block_dim = 16, int _thread_dim = 2>
+	TinyTensor matmul(const TinyTensor& other) const
+	{
+		size_t rows = size<-2>();
+		size_t inner = size<-1>();
+		size_t cols = other.size<-1>();
+		
+		if (inner != other.size<-2>()) {
+			shark::raise("matmul inner mismatch");
+		}
+		
+		size_t batch = 1;
+		for (size_t i = 0; i < dim() - 2; ++i) {
+			batch *= shape_[i];
+		}
+		
+		std::vector<size_t> out_shape;
+		for (size_t i = 0; i < dim() - 2; ++i) {
+			out_shape.push_back(shape_[i]);
+		}
+		out_shape.push_back(rows);
+		out_shape.push_back(cols);
+		
+		TinyTensor C(out_shape);
+		
+		constexpr size_t TILE = _block_dim * _thread_dim;
+		dim3 block(_block_dim, _block_dim);
+		dim3 grid(
+			(cols + TILE - 1) / TILE,
+				  (rows + TILE - 1) / TILE,
+				  batch
+		);
+		bool b_batched = other.dim() > 2;
+		batched_matmul_kernel<_block_dim, _thread_dim><<<grid, block>>>(
+			C.rptr(), rptr(),  other.rptr(), batch, rows, inner, cols, b_batched);
+		
+		ck_ = hipGetLastError();
+		ck_ = hipDeviceSynchronize();
+		
 		return C;
 	}
 	
@@ -597,23 +780,77 @@ public:
 		return o;
 	}
 	
+	TinyTensor permute(const std::vector<size_t>& perm) const
+	{
+		if (perm.size() != dim()) {
+			shark::raise("permute dimension mismatch");
+		}
+		std::vector<size_t> new_shape(dim());
+		
+		for (size_t i = 0; i < dim(); ++i) {
+			new_shape[i] = shape_[perm[i]];
+		}
+		
+		TinyTensor out(new_shape);
+		
+		size_t* d_shape;
+		size_t* d_perm;
+		
+		ck_ = hipMalloc(&d_shape, sizeof(size_t) * dim());
+		ck_ = hipMalloc(&d_perm, sizeof(size_t) * dim());
+		
+		ck_ = hipMemcpy(d_shape, shape_.data(), sizeof(size_t) * dim(), hipMemcpyHostToDevice);
+		ck_ = hipMemcpy(d_perm, perm.data(), sizeof(size_t) * dim(), hipMemcpyHostToDevice);
+		
+		dim3 block(256);
+		dim3 grid((numel() + block.x - 1) / block.x);
+		permute_kernel<<<grid, block>>>(out.rptr(), rptr(), d_shape, d_perm, dim(), numel());
+		
+		ck_ = hipFree(d_shape);
+		ck_ = hipFree(d_perm);
+		
+		return out;
+	}
+	
+	TinyTensor transpose(size_t dim0, size_t dim1) const
+	{
+		if (dim0 >= dim() || dim1 >= dim()) {
+			shark::raise("transpose dimension out of range");
+		}
+		std::vector<size_t> perm(dim());
+		for (size_t i = 0; i < dim(); ++i) {
+			perm[i] = i;
+		}
+		
+		std::swap(perm[dim0], perm[dim1]);
+		return permute(perm);
+	}
+	
 	TinyTensor transpose() const
 	{
 		if (dim() != 2) {
-			shark::raise("transpose only supports 2D tensors, got dim={}", dim());
+			shark::raise(
+				"transpose currently only supports 2D tensors, got dim={}",
+				dim()
+			);
 		}
+		
 		size_t rows = size<-2>();
 		size_t cols = size<-1>();
 		
-		TinyTensor o({cols, rows}); // flipped
+		TinyTensor o({cols, rows});
 		
-		dim3 block(16, 16);
-		dim3 grid((cols + block.x - 1) / block.x, (rows + block.y - 1) / block.y);
-		transpose_kernel<<<grid, block>>>(o.rptr(), rptr(), rows, cols);
+		constexpr int TILE = 32;
 		
+		dim3 block(TILE, TILE);
+		dim3 grid(
+			(cols + TILE - 1) / TILE,
+				  (rows + TILE - 1) / TILE
+		);
+		
+		transpose_tiled_kernel<TILE><<<grid, block>>>(o.rptr(), rptr(), rows, cols);
 		ck_ = hipGetLastError();
 		ck_ = hipDeviceSynchronize();
-		
 		return o;
 	}
 	
@@ -656,22 +893,73 @@ private:
 	shark::rcheck<hipError_t, hipError_t::hipSuccess> ck_; // It contains no member variables.
 };
 
-TinyTensor attention(const TinyTensor& q, const TinyTensor& k, const TinyTensor& v) {
-	if (q.size<-1>() != k.size<-1>()) {
-		shark::raise("Q and K hidden mismatch");
+class Linear
+{
+public:
+	// Invesered compared to PyTorch
+	// In Out
+	Linear(size_t rows, size_t cols) : weight_({rows, cols})
+	{
+		weight_.make_rand(1e-5, 1e-6);
 	}
 	
-	if (k.size<-2>() != v.size<-2>()) {
-		shark::raise("K and V sequence mismatch");
+	TinyTensor forward(const TinyTensor& x)
+	{
+		shark::assert(x.size<-1>() == weight_.size<-2>());
+		auto new_shape = x.shape();
+		new_shape[new_shape.size() - 1] = weight_.size<-1>();
+		TinyTensor o = x.matmul(weight_);
+		return o;
+	}
+private:
+	
+	TinyTensor weight_;
+};
+
+
+class Attention
+{
+	const size_t dim_;
+	
+public:
+	Attention(size_t dim, size_t q_head, size_t kv_head) :
+		dim_(dim),
+		q_proj({dim, dim}), o_proj({dim, dim}),
+		k_proj({dim, dim / (kv_head / q_head)}), v_proj({dim, dim / (kv_head / q_head)})
+	{
+		shark::assert(q_head % kv_head == 0);
+		
 	}
 	
-	auto s = q.matmul(k.transpose());
-	s.multiply_(1.F / std::sqrt(static_cast<float>(q.size<-1>())));
+	TinyTensor attn(const TinyTensor& q, const TinyTensor& k, const TinyTensor& v)
+	{
+		shark::assert(q.size<-1>() == k.size<-1>(), "Q and K hidden mismatch");
+		shark::assert(k.size<-2>() == v.size<-2>(), "K and V sequence mismatch");
+		
+		TinyTensor s = q.matmul(k.transpose());
+		s.multiply_(1.F / std::sqrt(static_cast<float>(q.size<-1>())));
+		
+		auto p = s.softmax();
+		auto o = p.matmul(v);
+		return o;
+	}
 	
-	auto p = s.softmax();
-	auto o = p.matmul(v);
-	return o;
-}
+	TinyTensor forward(const TinyTensor& x)
+	{
+		shark::assert(dim_ == x.size<-1>());
+		
+		auto q = q_proj.forward(x);
+		auto k = k_proj.forward(x);
+		auto v = v_proj.forward(x);
+	}
+	
+private:
+	Linear k_proj;
+	Linear q_proj;
+	Linear v_proj;
+	Linear o_proj;
+};
+
 
 int main(int argc, char** argv)
 {

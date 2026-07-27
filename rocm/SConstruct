@@ -11,12 +11,13 @@ cpp_env = Environment(
 
 hip_env = Environment(
 	CXX="hipcc",
+	CC="hipcc",
 	CXXFLAGS=[
 		"-std=c++20",
 		"-O2",
+		"--rocm-device-lib-path=/usr/lib/llvm-17/lib/clang/17/amdgcn/bitcode",
 	],
 )
-
 
 cpp_env.Tool("compilation_db")
 hip_env.Tool("compilation_db")
