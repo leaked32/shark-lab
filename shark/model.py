@@ -448,7 +448,7 @@ class Norm1(nn.Module):
 		super().__init__()
 		self.weight = nn.Parameter(torch.ones(chan))
 		self.eps = eps
-		self.functional_rms_norm = False
+		self.functional_rms_norm = True
 	
 	def forward(self, acts: Tensor) -> Tensor:
 		"""	WARNING
