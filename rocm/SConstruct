@@ -11,6 +11,8 @@ cpp_env = Environment(
 	],
 )
 
+rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
+
 hip_env = Environment(
 	ENV=os.environ,
 	CXX="hipcc",
@@ -18,8 +20,11 @@ hip_env = Environment(
 	CXXFLAGS=[
 		"-std=c++20",
 		"-O2",
-	],
+		f"--rocm-path={rocm_path}",
+		f"--rocm-device-lib-path={rocm_path}/amdgcn/bitcode",
+	]
 )
+
 # print("scons ENV PATH:", hip_env["ENV"].get("PATH"))
 # print("scons hipcc:", hip_env.WhereIs("hipcc"))
 # exit()

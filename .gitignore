@@ -11,6 +11,7 @@ build/
 .sconsign.dblite
 compile_commands.*
 CMakePresets.json
+*.kate-swp
 
 # Data
 datasets/

@@ -129,3 +129,4 @@ The project is primarily intended for:
 
 APIs and internal implementations may change as the project evolves.
 
+black --line-length 100 .

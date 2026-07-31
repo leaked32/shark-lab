@@ -545,6 +545,18 @@ public:
 	{
 		other.rptr_ = nullptr;
 	}
+	LittleVector& operator=(LittleVector&& other) noexcept
+	{
+		if (this != &other) {
+			r_dealloc();
+			data_ = std::move(other.data_);
+			rptr_ = other.rptr_;
+			
+			other.rptr_ = nullptr;
+		}
+		
+		return *this;
+	}
 	/*
 	template<typename ...Types>
 	LittleVector(Types&& ...values) : data_(std::forward<Types>(values)...) {
@@ -665,11 +677,13 @@ constexpr std::vector<size_t> make_contiguous_stride(
 class LittleTensor
 {
 public:
+	using size_type = size_t;
+	using value_type = float;
 	
 	struct from_shared_data_t { };
 	inline static constexpr from_shared_data_t from_shared_data{};
 	
-	LittleTensor(const std::vector<size_t>& shape)
+	LittleTensor(const std::vector<size_type>& shape)
 		: shape_(shape),
 		data_(std::make_shared<decltype(data_)::element_type>(shark::numel(shape))),
 		stride_(make_contiguous_stride(shape))
@@ -679,11 +693,25 @@ public:
 		shape_(std::move(other.shape_)),
 		stride_(std::move(other.stride_)), data_(std::move(other.data_))
 	{ }
+	LittleTensor& operator=(LittleTensor&& other) noexcept
+	{
+		if (this != &other)
+		{
+			shape_ = std::move(other.shape_);
+			stride_ = std::move(other.stride_);
+			data_ = std::move(other.data_);
+		}
+		return *this;
+	}
 	
 	// This constructor will share the underlying data_.
 	LittleTensor(from_shared_data_t, const LittleTensor& other) :
 		shape_(other.shape_),
 		stride_(other.stride_), data_(other.data_)
+	{ }
+	
+	LittleTensor(const LittleTensor& other) :
+		shape_(other.shape_), stride_(other.stride_), data_(other.data_)
 	{ }
 	
 	int operator==(const LittleTensor& other) const
@@ -700,7 +728,7 @@ public:
 	}
 	
 	template<int64_t pos>
-	constexpr size_t size() const {
+	constexpr size_type size() const {
 		if constexpr (pos >= 0) {
 			return shape()[pos];
 		} else {
@@ -708,12 +736,12 @@ public:
 		}
 	}
 	
-	constexpr size_t dim() const { return shape().size(); }
+	constexpr size_type dim() const { return shape().size(); }
 	
 	LittleTensor rmsnorm_cpu(const LittleTensor& x, float eps = 1e-5f) const
 	{
-		size_t rows = x.size<-2>();
-		size_t cols = x.size<-1>();
+		size_type rows = x.size<-2>();
+		size_type cols = x.size<-1>();
 		
 		LittleTensor o({rows, cols});
 		
@@ -760,7 +788,7 @@ public:
 		const float* w_ptr = rptr();
 		float* o_ptr = o.rptr();
 		
-		constexpr size_t _block = 256;
+		constexpr size_type _block = 256;
 		// constexpr size_t _col_per_thread = 4;
 		dim3 block(_block);
 		dim3 grid(rows);
@@ -769,7 +797,7 @@ public:
 		return o;
 	}
 	
-	void permute_(const std::vector<size_t>& perm)
+	void permute_(const std::vector<size_type>& perm)
 	{
 		if (perm.size() != dim()) {
 			shark::raise("permute dimension mismatch");
@@ -778,7 +806,7 @@ public:
 		auto shape = shape_.vec();
 		auto stride = stride_.vec();
 		
-		for (size_t i = 0; i < dim(); ++i) {
+		for (size_type i = 0; i < dim(); ++i) {
 			shape[i] = shape_.vec()[perm[i]];
 			stride[i] = stride_.vec()[perm[i]];
 		}
@@ -810,7 +838,7 @@ public:
 		// update flag
 	}
 	
-	void transpose_(size_t dim0, size_t dim1)
+	void transpose_(size_type dim0, size_type dim1)
 	{
 		auto shape = shape_.vec();
 		auto stride = stride_.vec();
@@ -827,8 +855,8 @@ public:
 	{
 		shark::assert(dim() == 2, "transpose only supports 2D tensors, got dim={}", dim());
 		
-		size_t rows = size<-2>();
-		size_t cols = size<-1>();
+		size_type rows = size<-2>();
+		size_type cols = size<-1>();
 		
 		LittleTensor o({cols, rows});
 		
@@ -846,12 +874,12 @@ public:
 		return o;
 	}
 	
-	void reshape_(const std::vector<size_t>& new_shape)
+	void reshape_(const std::vector<size_type>& new_shape)
 	{
 		shark::assert(is_contiguous(), "reshape_() should not be called when it's not contiguous");
 		
-		size_t new_elements = 1;
-		for (size_t s : new_shape) {
+		size_type new_elements = 1;
+		for (size_type s : new_shape) {
 			new_elements *= s;
 		}
 		shark::assert(new_elements == numel(), 
@@ -861,7 +889,7 @@ public:
 		this->stride_.assign_(make_contiguous_stride(new_shape));
 	}
 	
-	LittleTensor view(const std::vector<size_t>& new_shape) const {
+	LittleTensor view(const std::vector<size_type>& new_shape) const {
 		shark::assert(is_contiguous(), "view currently requires contiguous tensor");
 		
 		LittleTensor tensor{ from_shared_data, *this };
@@ -869,7 +897,7 @@ public:
 		return tensor;
 	}
 	
-	void multiply_(float value)
+	void multiply_(value_type value)
 	{
 		size_t n = numel();
 		dim3 block(256);
@@ -897,9 +925,9 @@ public:
 
 	bool is_contiguous() const
 	{
-		size_t expected = 1;
+		size_type expected = 1;
 		
-		for (size_t i = dim(); i-- > 0;) {
+		for (size_type i = dim(); i-- > 0;) {
 			if (shape_[i] == 1)
 				continue;
 			
@@ -931,16 +959,16 @@ public:
 			return shark::math::random_float(begin, end);}
 		);
 	}
-	const std::vector<size_t>& stride() const {
+	const std::vector<size_type>& stride() const {
 		return stride_.vec();
 	}
-	const size_t* stride_ptr() const {
+	const size_type* stride_ptr() const {
 		return stride_.rptr();
 	}
-	const std::vector<size_t>& shape() const {
+	const std::vector<size_type>& shape() const {
 		return shape_.vec();
 	}
-	const size_t* shape_ptr() const {
+	const size_type* shape_ptr() const {
 		return shape_.rptr();
 	}
 	auto& data() {
@@ -949,17 +977,17 @@ public:
 	const auto& data() const {
 		return data_;
 	}
-	float* rptr() {
+	value_type* rptr() {
 		return data_->rptr();
 	}
-	const float* rptr() const {
+	const value_type* rptr() const {
 		return data_->rptr();
 	}
 	constexpr size_t numel() const {
 		return shark::numel(shape());
 	}
 	const size_t rbytes() const {
-		return numel() * sizeof(float);	
+		return numel() * sizeof(value_type);	
 	}
 	
 #pragma endregion
@@ -969,9 +997,9 @@ private:
 	 * stride is more general because it directly describes address movement,
 	 * including layouts that are not permutations of a contiguous tensor.
 	 */
-	LittleVector<size_t> shape_;
-	LittleVector<size_t> stride_;
-	std::shared_ptr<LittleVector<float>> data_;
+	LittleVector<size_type> shape_;
+	LittleVector<size_type> stride_;
+	std::shared_ptr<LittleVector<value_type>> data_;
 	// std::vector<size_t> shape_;
 	// std::vector<float> data_;
 	
@@ -1058,7 +1086,6 @@ private:
 	LittleTensor weight_;
 };
 
-
 class Attention
 {
 	const size_t dim_;
@@ -1127,11 +1154,402 @@ private:
 };
 
 
+namespace neural_network
+{
+
+struct Module
+{
+	
+	
+};
+
+	
+	
 }
 
+
+class AdamW
+{
+	struct State
+	{
+		LittleTensor m;
+		LittleTensor v;
+	};
+	
+	std::unordered_map<LittleTensor*, State> states_;
+	
+	void step(const std::vector<LittleTensor*>& params)
+	{
+		for (auto* p : params)
+		{
+			auto& state = states_[p];
+			
+			if (!state exists)
+				initialize m and v;
+			
+			update(*p, state);
+		}
+	}
+};
+
+
+class LittleGraph
+{
+public:
+	using index_type = size_t;
+	
+	struct Value
+	{
+		Value() = default;
+		Value(const std::shared_ptr<LittleTensor>& tensor) : tensor_(tensor) {}
+		
+		std::shared_ptr<LittleTensor> tensor_;
+		std::optional<LittleTensor> grad_;
+		bool requires_grad_ = false;
+	};
+	
+	struct Node
+	{
+		enum class Operand {
+			null, add, mul, matmul, transpose
+		};
+		
+		Node(Operand operand, std::vector<index_type> input, index_type output) :
+		input_(std::move(input)), output_(output), operand_(operand)
+		{ }
+		
+		std::vector<index_type> input_;
+		index_type output_;
+		Operand operand_ = Operand::null;
+		bool is_backward = false;
+	};
+	
+public:
+	index_type add_value_(const std::shared_ptr<LittleTensor>& tensor)
+	{
+		std::scoped_lock lk(mtx_);
+		values_.emplace_back(tensor);
+		return values_.size() - 1;
+	}
+	
+	index_type add_node_(
+		Node::Operand operand, std::vector<index_type> input, index_type output)
+	{
+		nodes_.emplace_back(operand, std::move(input), output);
+		return nodes_.size() - 1;
+	}
+	
+	index_type make_grad_node_(
+		Node::Operand operand, std::vector<index_type> input)
+	{
+		index_type output = values_.size();
+		values_.emplace_back();
+		
+		auto idx = add_node_(operand, std::move(input), output);
+		nodes_[idx].is_backward = true;
+		
+		return output;
+	}
+	
+	index_type accumulate(
+		std::vector<std::optional<index_type>>& grad,
+		index_type dst, index_type incoming)
+	{
+		if (!grad[dst]) {
+			grad[dst] = incoming;
+		} else {
+			grad[dst] = make_grad_node_(
+				Node::Operand::add, {*grad[dst], incoming}
+			);
+		}
+		
+		return *grad[dst];
+	}
+	
+	std::vector<std::optional<index_type>>
+	compile_backward(index_type loss)
+	{
+		shark::assert(loss < values_.size());
+		shark::assert(values_[loss].tensor_ != nullptr);
+		
+		size_t forward_size = nodes_.size();
+		size_t value_size = values_.size();
+		
+		std::vector<std::optional<index_type>> grad(value_size);
+		
+		auto one = std::make_shared<LittleTensor>(
+			values_[loss].tensor_->shape()
+		);
+		one->make_all(1);
+		grad[loss] = add_value_(one);
+		
+		for (size_t i = forward_size; i-- > 0;) {
+			Node node = nodes_[i];
+			
+			if (node.is_backward || !grad[node.output_])
+				continue;
+			
+			auto output_grad = *grad[node.output_];
+			
+			switch (node.operand_) {
+				case Node::Operand::matmul: {
+					shark::assert(node.input_.size() == 2);
+					
+					auto A = node.input_[0];
+					auto B = node.input_[1];
+					
+					auto Bt = make_grad_node_(
+						Node::Operand::transpose, {B}
+					);
+					auto dA = make_grad_node_(
+						Node::Operand::matmul, {output_grad, Bt}
+					);
+					auto At = make_grad_node_(
+						Node::Operand::transpose, {A}
+					);
+					auto dB = make_grad_node_(
+						Node::Operand::matmul, {At, output_grad}
+					);
+					
+					accumulate(grad, A, dA);
+					accumulate(grad, B, dB);
+					break;
+				}
+				
+				case Node::Operand::add: {
+					shark::assert(node.input_.size() == 2);
+					
+					accumulate(grad, node.input_[0], output_grad);
+					accumulate(grad, node.input_[1], output_grad);
+					break;
+				}
+				
+				default:
+					break;
+			}
+		}
+		
+		return grad;
+	}
+	
+	void execute_backward(
+		const std::vector<std::optional<index_type>>& grad)
+	{
+		shark::rcheck<hipError_t, hipError_t::hipSuccess> ck;
+		
+		for (auto& node : nodes_) {
+			if (!node.is_backward)
+				continue;
+			
+			for (auto input : node.input_) {
+				shark::assert(input < values_.size());
+				shark::assert(
+					values_[input].tensor_ != nullptr,
+				  "backward input tensor is null: {}", input
+				);
+			}
+			
+			switch (node.operand_) {
+				case Node::Operand::matmul: {
+					shark::assert(node.input_.size() == 2);
+					
+					auto result = matmul(
+						*values_[node.input_[0]].tensor_,
+						*values_[node.input_[1]].tensor_
+					);
+					
+					values_[node.output_].tensor_ =
+					std::make_shared<LittleTensor>(std::move(result));
+					break;
+				}
+				
+				case Node::Operand::transpose: {
+					shark::assert(node.input_.size() == 1);
+					
+					auto result =
+					values_[node.input_[0]].tensor_->transpose();
+					
+					values_[node.output_].tensor_ =
+					std::make_shared<LittleTensor>(std::move(result));
+					break;
+				}
+				
+				case Node::Operand::add: {
+					shark::assert(node.input_.size() == 2);
+					
+					auto& A = *values_[node.input_[0]].tensor_;
+					auto& B = *values_[node.input_[1]].tensor_;
+					
+					shark::assert(A.shape() == B.shape(), "gradient add shape mismatch");
+					
+					auto result = std::make_shared<LittleTensor>(A.shape());
+					size_t n = result->numel();
+					
+					dim3 block(256);
+					dim3 grid((n + block.x - 1) / block.x);
+					
+					matadd_kernel<<<grid, block>>>(
+						result->rptr(), A.rptr(), B.rptr(),
+												   static_cast<int>(n)
+					);
+					
+					ck = hipGetLastError();
+					ck = hipDeviceSynchronize();
+					
+					values_[node.output_].tensor_ = std::move(result);
+					break;
+				}
+				
+				default:
+					shark::raise("unsupported backward operand");
+					break;
+			}
+		}
+		
+		for (size_t i = 0; i < grad.size(); ++i) {
+			if (!grad[i])
+				continue;
+			
+			auto result = *grad[i];
+			
+			shark::assert(result < values_.size());
+			shark::assert(
+				values_[result].tensor_ != nullptr,
+				 "gradient tensor is null: value={}, result={}", i, result
+			);
+			
+			values_[i].grad_.emplace(*values_[result].tensor_);
+		}
+	}
+	
+	const std::optional<LittleTensor>& grad(index_type idx) const
+	{
+		shark::assert(idx < values_.size());
+		return values_[idx].grad_;
+	}
+	
+	const std::shared_ptr<LittleTensor>& tensor(index_type idx) const
+	{
+		shark::assert(idx < values_.size());
+		return values_[idx].tensor_;
+	}
+	
+private:
+	std::vector<Value> values_;
+	std::vector<Node> nodes_;
+	std::mutex mtx_;
+};
+
+
+
+// shark END
+}
+
+// ./build/hip-test/hip-test
 int main(int argc, char** argv)
 {
 	using namespace shark;
+	
+	using large = LittleTensor;
+	using little = std::shared_ptr<large>;
+	
+	LittleGraph graph;
+	
+	std::vector<size_t> basic_shape({1ULL, 1ULL});
+	
+	little A = std::make_shared<large>(basic_shape);
+	A->make_all(2);
+	auto iA = graph.add_value_(A);
+	
+	
+	little B = std::make_shared<large>(basic_shape);
+	B->make_all(3);
+	auto iB = graph.add_value_(B);
+	
+	
+	// C = A @ B
+	auto C = std::make_shared<large>(matmul(*A, *B));
+	auto iC = graph.add_value_(C);
+	
+	graph.add_node_(
+		LittleGraph::Node::Operand::matmul,
+		{iA, iB},
+		iC
+	);
+	
+	
+	// D = C @ A
+	auto D = std::make_shared<large>(matmul(*C, *A));
+	auto iD = graph.add_value_(D);
+	
+	graph.add_node_(
+		LittleGraph::Node::Operand::matmul,
+		{iC, iA},
+		iD
+	);
+	
+	
+	// F = 2A
+	auto two = std::make_shared<large>(basic_shape);
+	two->make_all(2);
+	auto iTwo = graph.add_value_(two);
+	
+	auto F = std::make_shared<large>(matmul(*two, *A));
+	auto iF = graph.add_value_(F);
+	
+	graph.add_node_(
+		LittleGraph::Node::Operand::matmul,
+		{iTwo, iA},
+		iF
+	);
+	
+	
+	// E = D + F
+	auto E = std::make_shared<large>(*D);
+	E->make_all(16); // placeholder until add kernel exists
+	auto iE = graph.add_value_(E);
+	
+	graph.add_node_(
+		LittleGraph::Node::Operand::add,
+		{iD, iF},
+		iE
+	);
+	
+	
+	shark::log::info("C:");
+	print_matrix(
+		C->rptr(),
+				 1, 1,
+			  20, 20
+	);
+	
+	shark::log::info("D:");
+	print_matrix(
+		D->rptr(),
+				 1, 1,
+			  20, 20
+	);
+	
+	shark::log::info("E:");
+	print_matrix(
+		E->rptr(),
+				 1, 1,
+			  20, 20
+	);
+	
+	auto grad = graph.compile_backward(iE);
+	graph.execute_backward(grad);
+	
+	print_matrix(graph.grad(iA)->rptr(), 1, 1, 20, 20);
+	print_matrix(graph.grad(iB)->rptr(), 1, 1, 20, 20);
+	
+	
+	// Expected:
+	// dE/dA = 14
+	// dE/dB = 4
+	
+	// TODO: expose graph value/gradient accessor
+	
 	
 	return 0;
 }
