@@ -11,10 +11,9 @@
 
 namespace chatty
 {
-	
-std::optional<boost::json::object> prepare_payload(
-	ApplicationState& app_state, uint32_t peer_id, uint32_t self_id
-);
+
+std::optional<boost::json::object> prepare_payload(ApplicationState& app_state, uint32_t peer_id,
+												   uint32_t self_id);
 
 void send_message_llama(
 	ApplicationState& state, const boost::json::object& payload,

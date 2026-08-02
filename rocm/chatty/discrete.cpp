@@ -19,7 +19,8 @@ static char lore_keyword[256] = "";
 static char lore_content[2048] = "";
 static int selected_lore_index = -1;
 
-struct lore_entry_ui {
+struct lore_entry_ui
+{
 	int id;
 	std::string keyword;
 	std::string content;
@@ -28,9 +29,7 @@ struct lore_entry_ui {
 static std::vector<lore_entry_ui> lore_entries;
 
 void RenderLorebookWindow(
-	std::unique_ptr<chatty::db>& uni_db,
-	std::optional<chatty::peer> selected_peer_info
-)
+	std::unique_ptr<chatty::db>& uni_db, std::optional<chatty::peer> selected_peer_info)
 {
 	if (!show_lorebook_window)
 		return;
@@ -58,7 +57,7 @@ void RenderLorebookWindow(
 	lore_entries.clear();
 	auto rows = uni_db->get_lorebook_for_peer(selected_peer_info.value().id);
 
-	for (auto &r : rows)
+	for (auto& r : rows)
 		lore_entries.push_back({(int)r.id, r.keyword, r.content});
 
 	// -----------------------------
@@ -72,11 +71,9 @@ void RenderLorebookWindow(
 		if (ImGui::Selectable(lore_entries[i].keyword.c_str(), selected)) {
 			selected_lore_index = i;
 
-			strncpy(lore_keyword, lore_entries[i].keyword.c_str(),
-			        sizeof(lore_keyword));
+			strncpy(lore_keyword, lore_entries[i].keyword.c_str(), sizeof(lore_keyword));
 
-			strncpy(lore_content, lore_entries[i].content.c_str(),
-			        sizeof(lore_content));
+			strncpy(lore_content, lore_entries[i].content.c_str(), sizeof(lore_content));
 		}
 	}
 
@@ -90,28 +87,26 @@ void RenderLorebookWindow(
 
 	ImGui::Text("Keyword:");
 	ImGui::InputText("##keyword", lore_keyword, sizeof(lore_keyword));
-	
-	
+
+
 	ImGui::Text("Content:");
-	
+
 	ImVec2 avail = ImGui::GetContentRegionAvail();
-	
-	float button_height =
-	ImGui::GetFrameHeight() +
-	ImGui::GetStyle().ItemSpacing.y;
-	
-	ImGui::InputTextMultiline("##content", lore_content, sizeof(lore_content),
-	                          ImVec2(avail.x, avail.y - button_height));
+
+	float button_height = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+
+	ImGui::InputTextMultiline(
+		"##content", lore_content, sizeof(lore_content), ImVec2(avail.x, avail.y - button_height));
 
 	// ImGui::Spacing();
 
 	if (ImGui::Button("Add / Update")) {
 		if (selected_lore_index >= 0) {
-			uni_db->update_lorebook_entry(lore_entries[selected_lore_index].id,
-			                              lore_keyword, lore_content);
-		} else {
-			uni_db->insert_lorebook(selected_peer_info.value().id, lore_keyword,
-			                        lore_content);
+			uni_db->update_lorebook_entry(
+				lore_entries[selected_lore_index].id, lore_keyword, lore_content);
+		}
+		else {
+			uni_db->insert_lorebook(selected_peer_info.value().id, lore_keyword, lore_content);
 		}
 
 		lore_keyword[0] = 0;
@@ -134,36 +129,26 @@ void RenderLorebookWindow(
 }
 
 void RenderModalText(
-	ApplicationState& app_state,
-	ActivityModalText& modal_text
-)
+	ApplicationState& app_state, ActivityModalText& modal_text)
 {
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
 	ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
 	// const char* title, std::unique_ptr<std::string>& message
-	if (ImGui::Begin(
-		modal_text.title_.c_str(),
-		&modal_text.open,
-		ImGuiWindowFlags_None))
-	{
+	if (ImGui::Begin(modal_text.title_.c_str(), &modal_text.open, ImGuiWindowFlags_None)) {
 		// Make a temporary buffer
-		
+
 		ImGui::TextUnformatted("Message:");
-		
+
 		ImVec2 avail = ImGui::GetContentRegionAvail();
-		
-		float button_height =
-		ImGui::GetFrameHeight() +
-		ImGui::GetStyle().ItemSpacing.y;
-		
-		ImGui::BeginChild(
-			"Message",
-			ImVec2(avail.x, avail.y - button_height));
-		
+
+		float button_height = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+
+		ImGui::BeginChild("Message", ImVec2(avail.x, avail.y - button_height));
+
 		ImGui::PushTextWrapPos();
 		ImGui::TextUnformatted(modal_text.text_.c_str());
 		ImGui::PopTextWrapPos();
-		
+
 		ImGui::EndChild();
 		/*
 		 *		ImGui::InputTextMultiline(
@@ -173,38 +158,30 @@ void RenderModalText(
 		 */
 		if (ImGui::Button("Copy"))
 			ImGui::SetClipboardText(modal_text.text_.c_str());
-		
+
 		ImGui::SameLine();
-		
-		if (ImGui::Button("OK"))
-		{
+
+		if (ImGui::Button("OK")) {
 			modal_text.open = false;
 			// ImGui::CloseCurrentPopup();
 		}
-		
+
 		ImGui::End();
 	}
 }
 
-#include "app.hpp"
-
-#include "imgui.h"
-#include <string>
-
 void RenderPeerEditorWindow(
-	ApplicationState& app_state,
-	ActivityPeerEditor& peer_state
-)
+	ApplicationState& app_state, ActivityPeerEditor& peer_state)
 {
 	if (!peer_state.open)
 		return;
-	
+
 	if (!ImGui::IsPopupOpen("Peer Editor"))
 		ImGui::OpenPopup("Peer Editor");
-	
+
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
 	ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-	
+
 	/*
 	ImGui::Begin(
 		"Login",
@@ -214,63 +191,61 @@ void RenderPeerEditorWindow(
 		ImGuiWindowFlags_NoCollapse
 	);
 	*/
-	
-	if (
-		ImGui::Begin(
-			"Peer Editor", &peer_state.open,
-			ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse
-		)
-	)
+
+	if (ImGui::Begin("Peer Editor",
+					 &peer_state.open,
+					 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+						 ImGuiWindowFlags_NoCollapse))
 	{
 		ImGui::Text("Name:");
 		ImGui::InputText("##name", peer_state.name, sizeof(peer_state.name));
-		
+
 		ImGui::Separator();
 		ImGui::Text("Character card:");
-		
-		float reserved =
-		ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y * 1;
+
+		float reserved = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y * 1;
 		// Scrollable log
-		ImGui::InputTextMultiline(
-			"##card", peer_state.card, sizeof(peer_state.card), ImVec2(-1, -reserved),
-								ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap);
-		
-		if (ImGui::Button(
-			peer_state.mode == ActivityPeerEditor::Mode::create ? "Create" : "Save"
-		)
-		) {
+		ImGui::InputTextMultiline("##card",
+								  peer_state.card,
+								  sizeof(peer_state.card),
+								  ImVec2(-1, -reserved),
+								  ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap);
+
+		if (ImGui::Button(peer_state.mode == ActivityPeerEditor::Mode::create ? "Create" : "Save"))
+		{
 			std::string name(peer_state.name);
 			std::string card(peer_state.card);
-			
+
 			if (!name.empty()) {
 				if (peer_state.mode == ActivityPeerEditor::Mode::create) {
 					app_state.uni_db_->insert_peer(name, card);
-				} else {
+				}
+				else {
 					app_state.uni_db_->update_peer(peer_state.selected_peer_id_, name, card);
 				}
-				
+
 				app_state.peers_ = app_state.uni_db_->get_all_peers();
-				
+
 				peer_state.name[0] = 0;
 				peer_state.card[0] = 0;
 				peer_state.selected_peer_id_ = 0;
 				peer_state.open = false;
-				
+
 				// ImGui::CloseCurrentPopup();
 			}
 		}
-		
+
 		ImGui::SameLine();
-		
+
 		if (ImGui::Button("Cancel")) {
 			peer_state.name[0] = 0;
 			peer_state.card[0] = 0;
 			peer_state.selected_peer_id_ = 0;
 			peer_state.open = false;
-			
+
 			ImGui::CloseCurrentPopup();
 		}
-		
+
 		ImGui::End();
 	}
 }

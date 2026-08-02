@@ -16,7 +16,7 @@ imgui/
 
 imgui.ini
 chatty.db
-chatty.json
+# chatty.json
 *.db
 
 

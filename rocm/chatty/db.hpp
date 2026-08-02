@@ -1,11 +1,11 @@
 /*
-* Project: shark-lab
-* Repository: https://github.com/leaked32/shark-lab
-*
-* File: chatty/db.hpp
-*
-* License: MIT
-*/
+ * Project: shark-lab
+ * Repository: https://github.com/leaked32/shark-lab
+ *
+ * File: chatty/db.hpp
+ *
+ * License: MIT
+ */
 
 #pragma once
 
@@ -20,13 +20,15 @@
 namespace chatty
 {
 
-struct peer {
+struct peer
+{
 	uint32_t id;
 	std::string name;
 	std::string card;
 };
 
-struct message {
+struct message
+{
 	uint32_t id;
 	uint32_t sender_id;
 	uint32_t reader_id;
@@ -34,66 +36,87 @@ struct message {
 	std::string created_at;
 };
 
-
-struct lore_row {
+struct lore_row
+{
 	int id;
 	std::string keyword;
 	std::string content;
 };
 
-struct config {
+struct color4
+{
+	float r;
+	float g;
+	float b;
+	float a;
+
+	template <typename T>
+	T get() const
+	{
+		return {r, g, b, a};
+	}
+};
+
+struct config
+{
 	config(std::string_view path);
 	void save() const;
 	~config();
-	
+
 	uint32_t peer_id_ = 1;
 	std::string server_address_ = "127.0.0.1";
+	std::string font_ = {};
 	uint32_t server_port_ = 37201;
-	
+	bool dark_mode_ = false;
+
+	color4 window_bg_{0.12f, 0.05f, 0.10f, 0.92f};
+	color4 frame_bg_{0.25f, 0.10f, 0.20f, 0.90f};
+	color4 button_{0.75f, 0.25f, 0.55f, 1.0f};
+	color4 button_hovered_{0.95f, 0.45f, 0.75f, 1.0f};
+	color4 button_active_{1.0f, 0.60f, 0.85f, 1.0f};
+	color4 text_{1.f, 1.f, 1.f, 1.f};
+
+	std::string background_path_ = "chatty_background.png";
+
 	const std::string path_;
 };
 
-class db {
-public:
+class db
+{
+  public:
 	db(std::string_view path);
 	~db();
 	void init();
 
-	uint32_t insert_peer(const std::string &name, const std::string &card);
-	void update_peer(uint32_t id, const std::string &name, const std::string &card);
+	uint32_t insert_peer(const std::string& name, const std::string& card);
+	void update_peer(uint32_t id, const std::string& name, const std::string& card);
 	void remove_peer(uint32_t peer_id);
 	std::optional<peer> get_peer_by_id(uint32_t peer_id);
 	std::vector<peer> get_all_peers();
-	
-	uint32_t insert_message(uint32_t sender_id, uint32_t reader_id, const std::string &content);
+
+	uint32_t insert_message(uint32_t sender_id, uint32_t reader_id, const std::string& content);
 	void remove_last_message(uint32_t peer_id, uint32_t self_id);
 	std::vector<message> get_messages_for_peer(uint32_t peer_id, uint32_t self_id);
-	
-	std::vector<lore_row> get_lorebook_for_peer(uint32_t peer_id);
-	void insert_lorebook(uint32_t peer_id, const std::string &keyword, const std::string &content);
-	void delete_lorebook_entry(int id);
-	void update_lorebook_entry(int id, const std::string &keyword, const std::string &content);
 
-private:
-	sqlite3 *db_ = nullptr;
+	std::vector<lore_row> get_lorebook_for_peer(uint32_t peer_id);
+	void insert_lorebook(uint32_t peer_id, const std::string& keyword, const std::string& content);
+	void delete_lorebook_entry(int id);
+	void update_lorebook_entry(int id, const std::string& keyword, const std::string& content);
+
+  private:
+	sqlite3* db_ = nullptr;
 	std::mutex mutex_;
 };
 
-
-struct dynamic_to_render {
+struct dynamic_to_render
+{
 	std::mutex tmp_mtx_stream;
 	std::string tmp_stream;
-	enum class status {
-		STREAMING,
-		INTERRUPTED,
-		COMPLETED
-	} status = status::STREAMING;
+	enum class status { STREAMING, INTERRUPTED, COMPLETED } status = status::STREAMING;
 	std::optional<std::function<void(const std::string& reply)>> on_completed = std::nullopt;
 	std::atomic_bool failed = false;
 	dynamic_to_render() {};
 };
 
 // namespace ends
-}
-
-
+} // namespace chatty

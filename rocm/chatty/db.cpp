@@ -18,39 +18,72 @@
 // CONFIGURATION
 // ==============================================================================================
 
-chatty::config::config(std::string_view path) : path_(path) 
+static chatty::color4 load_color(
+	boost::json::object& json, std::string_view name, chatty::color4 fallback)
+{
+	try {
+		auto value = json[name].as_array();
+
+		return {
+			static_cast<float>(value[0].get_double()), static_cast<float>(value[1].get_double()),
+			static_cast<float>(value[2].get_double()), static_cast<float>(value[3].get_double())};
+	} catch (std::exception&) {
+		return fallback;
+	}
+}
+
+chatty::config::config(
+	std::string_view path) : path_(path)
 {
 	try {
 		auto content = shark::file::read_json(path_);
 		peer_id_ = content["peer_id"].get_int64();
 		server_address_ = content["server_address"].get_string();
 		server_port_ = content["server_port"].get_int64();
-		
-		shark::log::debug(
-			"peer_id: {}; server_address: {}; server_port: {}",
-			peer_id_, server_address_, server_port_);
-		
-	} catch (std::exception &exc) {
+
+		font_ = content["font"].get_string();
+		background_path_ = content["background"].get_string();
+		dark_mode_ = content["dark_mode"].get_bool();
+
+		if (content.contains("theme")) {
+			auto theme = content["theme"].as_object();
+
+			window_bg_ = load_color(theme, "window_bg", window_bg_);
+			frame_bg_ = load_color(theme, "frame_bg", frame_bg_);
+			button_ = load_color(theme, "button", button_);
+			button_hovered_ = load_color(theme, "button_hovered", button_hovered_);
+			button_active_ = load_color(theme, "button_active", button_active_);
+			text_ = load_color(theme, "text", text_);
+		}
+
+		shark::log::debug("peer_id: {}; server_address: {}; server_port: {}", peer_id_,
+						  server_address_, server_port_);
+
+	} catch (std::exception& exc) {
 		shark::log::debug("Configuration File cannot load properly: {}", path);
 		// Defaults
 	}
 }
 
-void chatty::config::save() const {
+void chatty::config::save() const
+{
+	return;
+
 	boost::json::object content;
 	content["peer_id"] = peer_id_;
 	content["server_address"] = server_address_;
 	content["server_port"] = server_port_;
-	shark::file::dump_json(path_, content); 
+	shark::file::dump_json(path_, content);
 }
 
-chatty::config::~config() { save(); }
-
+chatty::config::~config()
+{
+	save();
+}
 
 // ==============================================================================================
 // SQLITE DATABASE
 // ==============================================================================================
-
 
 constexpr const char* SQL_DB_INIT = R"(
 CREATE TABLE IF NOT EXISTS peer (
@@ -90,55 +123,55 @@ CREATE TABLE IF NOT EXISTS message (
 );
 )";
 
-chatty::db::db(std::string_view path) {
-	
+chatty::db::db(
+	std::string_view path)
+{
 	this->db_ = nullptr;
 	int rc = sqlite3_open(path.data(), &db_);
 	if (rc) {
-		shark::raise(
-			"Failed to open sqlite database: {} for {}", path, sqlite3_errmsg(db_)
-		);
+		shark::raise("Failed to open sqlite database: {} for {}", path, sqlite3_errmsg(db_));
 	}
 	init();
 }
 
-chatty::db::~db() {
+chatty::db::~db()
+{
 	std::scoped_lock lock(mutex_);
 	sqlite3_close(db_);
 }
 
-void chatty::db::init() {
-	
+void chatty::db::init()
+{
 	sqlite3_exec(db_, "PRAGMA foreign_keys = ON;", nullptr, nullptr, nullptr);
-	
-	char *errMsg = nullptr;
+
+	char* errMsg = nullptr;
 	int rc = sqlite3_exec(db_, SQL_DB_INIT, nullptr, nullptr, &errMsg);
 
 	if (rc != SQLITE_OK) {
 		shark::raise("Error creating tables: {}", errMsg);
 		sqlite3_free(errMsg);
-	} else {
+	}
+	else {
 		shark::log::info("Table craeted. ");
 	}
 }
 
 void chatty::db::update_peer(
-	uint32_t id, const std::string &name, const std::string &card
-) 
+	uint32_t id, const std::string& name, const std::string& card)
 {
 	std::scoped_lock lock(mutex_);
-	
-	const char *sql = R"(
+
+	const char* sql = R"(
         UPDATE peer SET name = ?, card = ? WHERE id = ?;
     )";
 
-	sqlite3_stmt *stmt = nullptr;
+	sqlite3_stmt* stmt = nullptr;
 
 	int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-	
+
 	if (rc != SQLITE_OK)
 		throw std::runtime_error(sqlite3_errmsg(db_));
-	
+
 	sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, card.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 3, id);
@@ -148,16 +181,14 @@ void chatty::db::update_peer(
 }
 
 uint32_t chatty::db::insert_peer(
-	const std::string &name,
-	const std::string &card
-)
+	const std::string& name, const std::string& card)
 {
 	std::scoped_lock lock(mutex_);
-	const char *sql = R"(
+	const char* sql = R"(
         INSERT INTO peer (name, card) VALUES (?, ?)
     )";
 
-	sqlite3_stmt *stmt = nullptr;
+	sqlite3_stmt* stmt = nullptr;
 
 	int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (rc != SQLITE_OK) {
@@ -169,7 +200,7 @@ uint32_t chatty::db::insert_peer(
 
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
-	
+
 	if (rc != SQLITE_DONE) {
 		shark::raise("Insert peer failed: {}", sqlite3_errmsg(db_));
 	}
@@ -178,16 +209,15 @@ uint32_t chatty::db::insert_peer(
 }
 
 uint32_t chatty::db::insert_message(
-	uint32_t sender_id, uint32_t reader_id, const std::string &content
-)
+	uint32_t sender_id, uint32_t reader_id, const std::string& content)
 {
 	std::scoped_lock lock(mutex_);
-	
-	const char *sql = R"(
+
+	const char* sql = R"(
 		INSERT INTO message (sender_id, reader_id, content) VALUES (?, ?, ?)
 	)";
 
-	sqlite3_stmt *stmt = nullptr;
+	sqlite3_stmt* stmt = nullptr;
 	int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (rc != SQLITE_OK) {
 		shark::raise("Prepare failed: {}", sqlite3_errmsg(db_));
@@ -200,11 +230,11 @@ uint32_t chatty::db::insert_message(
 
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
-	
+
 	if (rc != SQLITE_DONE) {
 		shark::raise("Insert message failed: {}", sqlite3_errmsg(db_));
 	}
-	
+
 	uint32_t last_id = sqlite3_last_insert_rowid(db_);
 	return last_id;
 }
@@ -213,12 +243,12 @@ uint32_t chatty::db::insert_message(
 std::vector<chatty::peer> chatty::db::get_all_peers()
 {
 	std::scoped_lock lock(mutex_);
-	
+
 	std::vector<peer> peers;
 
-	const char *sql = "SELECT id, name, card FROM peer ORDER BY id";
+	const char* sql = "SELECT id, name, card FROM peer ORDER BY id";
 
-	sqlite3_stmt *stmt = nullptr;
+	sqlite3_stmt* stmt = nullptr;
 	int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (rc != SQLITE_OK) {
 		shark::raise("Prepare get_all_peers failed: {}", sqlite3_errmsg(db_));
@@ -227,10 +257,10 @@ std::vector<chatty::peer> chatty::db::get_all_peers()
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		peer p;
 		p.id = static_cast<uint32_t>(sqlite3_column_int(stmt, 0));
-		const unsigned char *name = sqlite3_column_text(stmt, 1);
-		const unsigned char *card = sqlite3_column_text(stmt, 2);
-		p.name = name ? reinterpret_cast<const char *>(name) : "";
-		p.card = card ? reinterpret_cast<const char *>(card) : "";
+		const unsigned char* name = sqlite3_column_text(stmt, 1);
+		const unsigned char* card = sqlite3_column_text(stmt, 2);
+		p.name = name ? reinterpret_cast<const char*>(name) : "";
+		p.card = card ? reinterpret_cast<const char*>(card) : "";
 		peers.push_back(std::move(p));
 	}
 
@@ -238,23 +268,21 @@ std::vector<chatty::peer> chatty::db::get_all_peers()
 	return peers;
 }
 
-std::vector<chatty::message>
-chatty::db::get_messages_for_peer(
-	uint32_t peer_id, uint32_t self_id
-) 
+std::vector<chatty::message> chatty::db::get_messages_for_peer(
+	uint32_t peer_id, uint32_t self_id)
 {
 	std::scoped_lock lock(mutex_);
-	
+
 	std::vector<message> messages;
 
-	const char *sql = R"(
+	const char* sql = R"(
 		SELECT id, sender_id, reader_id, content, created_at
 		FROM message
 		WHERE (sender_id = ? AND reader_id = ?) OR (reader_id = ? AND sender_id = ?)
 		ORDER BY created_at ASC
 	)";
 
-	sqlite3_stmt *stmt = nullptr;
+	sqlite3_stmt* stmt = nullptr;
 	int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (rc != SQLITE_OK) {
 		shark::raise("Prepare get_messages_for_peer failed: {}", sqlite3_errmsg(db_));
@@ -270,11 +298,11 @@ chatty::db::get_messages_for_peer(
 		m.id = static_cast<uint32_t>(sqlite3_column_int(stmt, 0));
 		m.sender_id = static_cast<uint32_t>(sqlite3_column_int(stmt, 1));
 		m.reader_id = static_cast<uint32_t>(sqlite3_column_int(stmt, 2));
-		const unsigned char *content = sqlite3_column_text(stmt, 3);
-		const unsigned char *time = sqlite3_column_text(stmt, 4);
+		const unsigned char* content = sqlite3_column_text(stmt, 3);
+		const unsigned char* time = sqlite3_column_text(stmt, 4);
 
-		m.content = content ? reinterpret_cast<const char *>(content) : "";
-		m.created_at = time ? reinterpret_cast<const char *>(time) : "";
+		m.content = content ? reinterpret_cast<const char*>(content) : "";
+		m.created_at = time ? reinterpret_cast<const char*>(time) : "";
 
 		messages.push_back(std::move(m));
 	}
@@ -283,13 +311,14 @@ chatty::db::get_messages_for_peer(
 	return messages;
 }
 
-void chatty::db::remove_peer(uint32_t peer_id) 
+void chatty::db::remove_peer(
+	uint32_t peer_id)
 {
 	std::scoped_lock lock(mutex_);
-	
-	sqlite3_stmt *stmt = nullptr;
+
+	sqlite3_stmt* stmt = nullptr;
 	// delete peer
-	const char *sql = "DELETE FROM peer WHERE id = ?;";
+	const char* sql = "DELETE FROM peer WHERE id = ?;";
 	int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (rc != SQLITE_OK) {
 		shark::raise("Prepare failed: {}", sqlite3_errmsg(db_));
@@ -300,14 +329,15 @@ void chatty::db::remove_peer(uint32_t peer_id)
 	sqlite3_finalize(stmt);
 }
 
-void chatty::db::remove_last_message(uint32_t peer_id, uint32_t self_id)
+void chatty::db::remove_last_message(
+	uint32_t peer_id, uint32_t self_id)
 {
 	std::scoped_lock lock(mutex_);
-	
-	sqlite3_stmt *stmt = nullptr;
 
-	const char *sql =
-	    R"(
+	sqlite3_stmt* stmt = nullptr;
+
+	const char* sql =
+		R"(
 		DELETE FROM message
 		WHERE id = (
 			SELECT id
@@ -332,13 +362,14 @@ void chatty::db::remove_last_message(uint32_t peer_id, uint32_t self_id)
 	sqlite3_finalize(stmt);
 }
 
-std::optional<chatty::peer> chatty::db::get_peer_by_id(uint32_t peer_id) 
+std::optional<chatty::peer> chatty::db::get_peer_by_id(
+	uint32_t peer_id)
 {
 	std::scoped_lock lock(mutex_);
-	
-	const char *sql = "SELECT id, name, card FROM peer WHERE id = ? LIMIT 1";
 
-	sqlite3_stmt *stmt = nullptr;
+	const char* sql = "SELECT id, name, card FROM peer WHERE id = ? LIMIT 1";
+
+	sqlite3_stmt* stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		return std::nullopt;
 	}
@@ -350,10 +381,10 @@ std::optional<chatty::peer> chatty::db::get_peer_by_id(uint32_t peer_id)
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		peer p;
 		p.id = static_cast<uint32_t>(sqlite3_column_int(stmt, 0));
-		const unsigned char *name = sqlite3_column_text(stmt, 1);
-		const unsigned char *card = sqlite3_column_text(stmt, 2);
-		p.name = name ? reinterpret_cast<const char *>(name) : "";
-		p.card = card ? reinterpret_cast<const char *>(card) : "";
+		const unsigned char* name = sqlite3_column_text(stmt, 1);
+		const unsigned char* card = sqlite3_column_text(stmt, 2);
+		p.name = name ? reinterpret_cast<const char*>(name) : "";
+		p.card = card ? reinterpret_cast<const char*>(card) : "";
 		result = p;
 	}
 
@@ -361,15 +392,14 @@ std::optional<chatty::peer> chatty::db::get_peer_by_id(uint32_t peer_id)
 	return result;
 }
 
-
-std::vector<chatty::lore_row>
-chatty::db::get_lorebook_for_peer(uint32_t peer_id)
+std::vector<chatty::lore_row> chatty::db::get_lorebook_for_peer(
+	uint32_t peer_id)
 {
 	std::scoped_lock lock(mutex_);
-	
-	const char *sql = "SELECT id, keyword, content FROM lorebook WHERE peer_id "
-	                  "= ? ORDER BY id ASC;";
-	sqlite3_stmt *stmt = nullptr;
+
+	const char* sql = "SELECT id, keyword, content FROM lorebook WHERE peer_id "
+					  "= ? ORDER BY id ASC;";
+	sqlite3_stmt* stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		throw std::runtime_error("Failed to prepare get_lorebook statement");
 
@@ -379,10 +409,8 @@ chatty::db::get_lorebook_for_peer(uint32_t peer_id)
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		lore_row row;
 		row.id = sqlite3_column_int(stmt, 0);
-		row.keyword =
-		    reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
-		row.content =
-		    reinterpret_cast<const char *>(sqlite3_column_text(stmt, 2));
+		row.keyword = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+		row.content = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
 		result.push_back(row);
 	}
 
@@ -391,14 +419,12 @@ chatty::db::get_lorebook_for_peer(uint32_t peer_id)
 }
 
 void chatty::db::insert_lorebook(
-	uint32_t peer_id, const std::string &keyword, const std::string &content
-)
+	uint32_t peer_id, const std::string& keyword, const std::string& content)
 {
 	std::scoped_lock lock(mutex_);
-	
-	const char *sql =
-	    "INSERT INTO lorebook (peer_id, keyword, content) VALUES (?, ?, ?);";
-	sqlite3_stmt *stmt = nullptr;
+
+	const char* sql = "INSERT INTO lorebook (peer_id, keyword, content) VALUES (?, ?, ?);";
+	sqlite3_stmt* stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		throw std::runtime_error("Failed to prepare insert_lorebook statement");
 
@@ -414,15 +440,15 @@ void chatty::db::insert_lorebook(
 	sqlite3_finalize(stmt);
 }
 
-void chatty::db::delete_lorebook_entry(int id)
+void chatty::db::delete_lorebook_entry(
+	int id)
 {
 	std::scoped_lock lock(mutex_);
-	
-	const char *sql = "DELETE FROM lorebook WHERE id = ?;";
-	sqlite3_stmt *stmt = nullptr;
+
+	const char* sql = "DELETE FROM lorebook WHERE id = ?;";
+	sqlite3_stmt* stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		throw std::runtime_error(
-		    "Failed to prepare delete_lorebook_entry statement");
+		throw std::runtime_error("Failed to prepare delete_lorebook_entry statement");
 
 	sqlite3_bind_int(stmt, 1, id);
 
@@ -435,19 +461,18 @@ void chatty::db::delete_lorebook_entry(int id)
 }
 
 void chatty::db::update_lorebook_entry(
-	int id, const std::string &keyword, const std::string &content
-) 
+	int id, const std::string& keyword, const std::string& content)
 {
 	std::scoped_lock lock(mutex_);
-	
-	const char *sql = R"(
+
+	const char* sql = R"(
         UPDATE lorebook
         SET keyword = ?,
             content = ?
         WHERE id = ?;
     )";
 
-	sqlite3_stmt *stmt = nullptr;
+	sqlite3_stmt* stmt = nullptr;
 
 	int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (rc != SQLITE_OK) {

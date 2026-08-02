@@ -750,10 +750,10 @@ namespace async
 				sit->proceeding_ = false;
 				local_delayer.exec_delay();
 			}
-			log::debug(
-				"io_context::run has ended since no candidate async action is provided\n",
-				"I don't think it's something you expect"
-			);
+			// log::debug(
+			// 	"io_context::run has ended since no candidate async action is provided"
+			// 	"  I guess. it's something you expect"
+			// );
 		}
 	};
 	
@@ -827,6 +827,10 @@ namespace async
 		void shutdown()
 		{
 			shutting_down_ = true;
+			
+			for (auto& thread : threads) {
+				thread.join();
+			}
 		}
 		
 	private:
