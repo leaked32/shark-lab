@@ -148,7 +148,7 @@ void shark::forcely_print_string(const std::string &input) {
 	// std::cout << std::endl;
 }
 
-std::string shark::str_replace(std::string_view input, std::string_view from,
+std::string shark::str::replace(std::string_view input, std::string_view from,
                               std::string_view to) {
 	using T = decltype(input);
 
@@ -201,12 +201,12 @@ std::string shark::str_replace(std::string_view input, std::string_view from,
 	return output;
 }
 
-bool shark::is_empty_or_whitespace(const std::string &s) {
+bool shark::str::is_empty_or_whitespace(const std::string &s) {
 	return std::all_of(s.begin(), s.end(),
 	                   [](unsigned char c) { return std::isspace(c); });
 }
 
-std::optional<std::string> shark::str_trim(const std::string &s) {
+std::optional<std::string> shark::str::trim(const std::string &s) {
 
 	if (std::all_of(s.begin(), s.end(),
 	                [](unsigned char c) { return std::isspace(c); })) {
@@ -225,7 +225,7 @@ std::optional<std::string> shark::str_trim(const std::string &s) {
 	return std::string(start, end);
 }
 
-unsigned short shark::leading_space_count(const std::string &s) {
+unsigned short shark::str::leading_space_count(const std::string &s) {
 	unsigned short count = 0;
 	auto start =
 	    std::find_if_not(s.begin(), s.end(),
@@ -234,13 +234,13 @@ unsigned short shark::leading_space_count(const std::string &s) {
 	return count;
 }
 
-void shark::remove_whitespace(std::string &s) {
+void shark::str::remove_whitespace(std::string &s) {
 	s.erase(std::remove_if(s.begin(), s.end(),
 	                       [](unsigned char c) { return std::isspace(c); }),
 	        s.end());
 }
 
-std::vector<std::string> shark::str_split(std::string_view input,
+std::vector<std::string> shark::str::split(std::string_view input,
                                          std::string_view delimiter) {
 	using T = decltype(input);
 
@@ -419,4 +419,36 @@ float shark::math::random_float(const float begin, const float end) {
 int shark::math::random_int(const int begin, const int end) {
 	float r = shark::math::random_float();
 	return begin + (int)(r * (end - begin));
+}
+
+size_t shark::str::utf8_codepoints(std::string_view s) {
+  size_t count = 0;
+
+  for (unsigned char c : s) {
+    if ((c & 0xC0) != 0x80)
+      ++count;
+  }
+
+  return count;
+}
+
+std::string shark::str::to_lower(const std::string &s) {
+  std::string result = s;
+  std::transform(result.begin(), result.end(), result.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return result;
+}
+
+size_t shark::str::estimate_tokens(std::string_view s) {
+  size_t ascii = 0;
+  size_t non_ascii_chars = 0;
+
+  for (unsigned char c : s) {
+    if (c < 128)
+      ++ascii;
+    else if ((c & 0xC0) != 0x80)
+      ++non_ascii_chars;
+  }
+
+  return (ascii + 3) / 4 + non_ascii_chars;
 }

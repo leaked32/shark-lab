@@ -7,6 +7,8 @@
  * License: MIT
  */
 
+#pragma once
+
 #ifndef __cplusplus
 #error "This header requires C++"
 #endif
@@ -317,10 +319,8 @@ void forcely_print_string(const std::string &input);
 void forcely_print_vector(const std::vector<std::string> &input);
 
 
-class file
+namespace file
 {
-public:
-	
 	class tlm_node {
 		// Touhou Little Marks
 	public:
@@ -368,32 +368,27 @@ public:
 		std::unique_ptr<std::string> doc = nullptr;
 	};
 	
-	static std::string read(std::string_view path);
-
-
-	static std::vector<char> read_binary(const std::string& filename);
-	
-	static tlm_node tlm_node_read(std::string_view path);
-
-	static boost::json::object read_json(std::string_view path);
-	static void dump_json(std::string_view path, const boost::json::object& js);
-
-
-private:
+	std::string read(std::string_view path);
+	std::vector<char> read_binary(const std::string& filename);
+	tlm_node tlm_node_read(std::string_view path);
+	boost::json::object read_json(std::string_view path);
+	void dump_json(std::string_view path, const boost::json::object& js);
 	
 };
 
-std::string str_replace(std::string_view input, std::string_view from, std::string_view to);
+namespace str
+{
+	std::string replace(std::string_view input, std::string_view from, std::string_view to);
+	std::vector<std::string> split(std::string_view input, std::string_view delimiter);
+	std::optional<std::string> trim(const std::string& s);
+	unsigned short leading_space_count(const std::string& s);
+	bool is_empty_or_whitespace(const std::string& s);
+	void remove_whitespace(std::string& s);
+	size_t utf8_codepoints(std::string_view s);
+	size_t estimate_tokens(std::string_view s);
+	std::string to_lower(const std::string &s);
+}
 
-std::vector<std::string> str_split(std::string_view input, std::string_view delimiter);
-
-std::optional<std::string> str_trim(const std::string& s);
-
-unsigned short leading_space_count(const std::string& s);
-
-bool is_empty_or_whitespace(const std::string& s);
-
-void remove_whitespace(std::string& s);
 
 namespace math
 {
@@ -426,7 +421,7 @@ namespace math
 	template <typename T>
 	std::tuple<T, T> from_interval_text(std::string_view interval)
 	{
-		std::string intr = str_replace(interval, " ", "");
+		std::string intr = str::replace(interval, " ", "");
 	}
 }
 
@@ -444,15 +439,14 @@ namespace async
 		bool before(std::chrono::system_clock::time_point end_point)
 		{
 			auto at_least = end_point - std::chrono::system_clock::now();
-			// std::chrono::system_clock::duration at_least = end_point - std::chrono::system_clock::now();
+			// std::chrono::system_clock::duration at_least =
+			//    end_point - std::chrono::system_clock::now();
 			// log::debug("before: at_least {}", at_least);
-			if (at_least <= std::chrono::milliseconds(0))
-			{
+			if (at_least <= std::chrono::milliseconds(0)) {
 				timer_ = std::chrono::milliseconds(0);
 				return true;
 			}
-			else if (at_least < timer_)
-			{
+			else if (at_least < timer_) {
 				timer_ = at_least;
 				return false;
 			}
@@ -463,19 +457,21 @@ namespace async
 		{
 			if (timer_ == std::chrono::milliseconds(0))
 			{
-				log::debug("local_delayer::exec_delay time's up");
+				// log::debug("local_delayer::exec_delay time's up");
 				return;
 			}
-			log::debug("local_delayer::exec_delay delay");
+			// log::debug("local_delayer::exec_delay delay");
 			std::this_thread::sleep_for(timer_);
 		}
 		void shorter(std::chrono::system_clock::duration dura)
 		{
 		}
 	};
-
-	struct thread_slice
+	
+	// task_context, thread slice
+	class strand
 	{
+	public:
 		io_context &parent_;
 		std::stack<std::coroutine_handle<>> addresses_;
 		
@@ -486,16 +482,16 @@ namespace async
 			virtual ~Condition() = default;
 		};
 		
-		std::unique_ptr<Condition> condition_ = nullptr;
 		std::atomic_bool proceeding_ = false;
 		
-		thread_slice(io_context &parent, std::coroutine_handle<> coro) : parent_(parent)
+		strand(io_context &parent, std::coroutine_handle<> coro) : parent_(parent)
 		{
 			addresses_.push(coro);
 		}
 		
-		thread_slice(io_context &parent, thread_slice &&obj) noexcept : parent_(parent), addresses_(std::move(obj.addresses_)),
-																		condition_(std::move(obj.condition_))
+		strand(io_context &parent, strand &&obj) noexcept : 
+				parent_(parent), addresses_(std::move(obj.addresses_)),
+				condition_(std::move(obj.condition_))
 		{
 			proceeding_ = static_cast<bool>(obj.proceeding_);
 		}
@@ -510,30 +506,44 @@ namespace async
 			
 			addresses.reserve(copy.size());
 			
-			while (!copy.empty())
-			{
+			while (!copy.empty()) {
 				addresses.push_back(copy.top().address());
 				copy.pop();
 			}
 			
-			for (auto it = addresses.rbegin(); it != addresses.rend(); ++it)
-			{
-				if (it != addresses.rbegin())
-				{
+			for (auto it = addresses.rbegin(); it != addresses.rend(); ++it) {
+				if (it != addresses.rbegin()) {
 					ss << ", ";
 				}
-				
 				ss << *it;
 			}
 			
 			ss << "]";
 			return ss.str();
 		}
+		
+		bool evaluate_condition(delayer& d)
+		{
+			std::scoped_lock lock(condition_mutex_);
+			if (!condition_) {
+				return true;
+			}
+			return condition_->evaluate(d);
+		}
+		
+		void set_condition(std::unique_ptr<Condition>&& condition)
+		{
+			std::scoped_lock lock(condition_mutex_);
+			condition_ = std::move(condition);
+		}
+	private:
+		std::unique_ptr<Condition> condition_ = nullptr;
+		std::mutex condition_mutex_;
 	};
 	
 	struct promise_type_base
 	{
-		thread_slice *slice_ = nullptr;
+		std::weak_ptr<strand> slice_ ;
 		std::exception_ptr except_ = nullptr;
 	};
 	
@@ -543,7 +553,7 @@ namespace async
 		struct promise_type;
 		
 		using Handle_Type = std::coroutine_handle<promise_type>;
-		Handle_Type h_;
+		Handle_Type coro_handle_;
 		
 		struct promise_type : promise_type_base
 		{
@@ -563,8 +573,6 @@ namespace async
 			
 			void unhandled_exception()
 			{
-				// Unhandled exception will definitely have chance to cause something not clearable.
-				// I don't assume someone deliberately programs like that, so I choose to dump the error and terminate the thread.
 				// I shall forward the exception, and terminate the thread.
 				try
 				{
@@ -573,7 +581,15 @@ namespace async
 				}
 				catch (std::exception &exc)
 				{
-					log::debug("slice: {}; current coroutine: {}; exception what: {}", (unsigned long)slice_, (unsigned long)slice_->addresses_.top().address(), exc.what());
+					auto slice = slice_.lock();
+					
+					if (slice) {
+						log::debug(
+							"slice: {}; current coroutine: {}; exception what: {}",
+							(unsigned long)slice.lock().get(), 
+							(unsigned long)slice.lock()->addresses_.top().address(), exc.what()
+						);
+					}
 				}
 				std::terminate();
 			}
@@ -581,7 +597,14 @@ namespace async
 		
 		void resume()
 		{
-			h_.resume();
+			coro_handle_.resume();
+		}
+		~awaitable()
+		{
+			// if(coro_handle_) {
+			// 	coro_handle_.destroy();
+			// 	coro_handle_ = nullptr;
+			// }
 		}
 		
 #pragma region Awaitable_Implementation
@@ -589,107 +612,155 @@ namespace async
 		constexpr auto await_ready() { return false; }
 		void await_suspend(std::coroutine_handle<> parent_handle)
 		{
-			using casted_type = std::coroutine_handle<promise_type_base>;
-			auto *p_parent_handle_base = reinterpret_cast<casted_type *>(&parent_handle);
-			thread_slice *former_slice = p_parent_handle_base->promise().slice_;
-			h_.promise().slice_ = former_slice;
-			former_slice->addresses_.push(h_);
+			// using casted_type = std::coroutine_handle<promise_type_base>;
+			// auto *p_parent_handle_base = reinterpret_cast<casted_type *>(&parent_handle);
+			auto coro_handle =
+				std::coroutine_handle<promise_type_base> ::from_address(parent_handle.address());
 			
-			// h_.resume behaves as a shortcut, it's not required for normal running, since the stack has been pushed. But it will be much faster if I call it here.
-			h_.resume();
+			// auto slice = coro_handle.promise().slice_;
+			std::weak_ptr<strand> former_slice = coro_handle.promise().slice_;
+			coro_handle_.promise().slice_ = former_slice;
+			former_slice.lock()->addresses_.push(coro_handle_);
+			
+			// h_.resume behaves as a shortcut, it's not required for normal running,
+			// since the stack has been pushed. But it will be much faster if I call it here.
+			coro_handle_.resume();
 		}
 		Result await_resume()
 		{
-			Result result = std::move(*h_.promise().result_);
-			h_.destroy();
+			Result result = std::move(*coro_handle_.promise().result_);
+			coro_handle_.destroy();
+			coro_handle_ = nullptr;
 			return result;
 		}
+		
 
 #pragma endregion
 	};
 	
 	struct io_context
 	{
-		std::list<thread_slice> context_;
+		std::vector<std::shared_ptr<strand>> context_;
+		// std::list<thread_slice> context_;
 		std::mutex mtx_context_;
 		
-		void run()
+		std::shared_ptr<strand> get_ready_coroutine()
 		{
-			delayer local_delayer{};
-			while (context_.empty() == false)
-			{
-				local_delayer.reset();
-				// log::info("local_delayer reset");
-				
-				std::unique_lock mtx_context_lock(mtx_context_);
-				for (auto it = context_.begin(); it != context_.end(); ++it, mtx_context_lock.lock())
-				{
-					
-					if (it->proceeding_ == true)
-					{
-						continue;
-					}
-					mtx_context_lock.unlock();
-					
-					it->proceeding_ = true;
-					// log::info("selected {}", it->stacks());
-					// log::info("mtx_context_lock unlock");
-					auto sit = it;
-					// If the condition is true, then the thread hasn't bound to any specific thread_slice currently.
-					
-					while (true)
-					{
-						if (sit->condition_ && !sit->condition_->evaluate(local_delayer))
-						{
-							break;
-						}
-						// Coroutine can call others and emplace them to the stack in io_context, but it mustn't resume coroutines behind.
-						log::debug("resuming {}", sit->stacks());
-						sit->addresses_.top().resume();
-						
-						// The most efficient way for it: direct execute the coroutine by co_await, and append it into the context list.
-						
-						// Case 1: The top coroutine appears to be done
-						// The struct ensures that only the top coroutine can be done at one execution.
-						if (auto &current_top = sit->addresses_.top(); current_top.done())
-						{
-							// sit->addresses_.top().destroy(); // ? Can I call this ? Definitely NO. If I do this, how can the previous coroutine access the result?
-							sit->addresses_.pop();
-							if (sit->addresses_.empty())
-							{
-								// There's no other parents could destroy the root coroutine.
-								current_top.destroy();
-								it--;
-								context_.erase(sit);
-								break;
-							}
-						}
-						// Case 2: The top coroutine hasn't completed, but still returned handling back.
-						// I shall go back to check the conditions...
-						// If the condition is still none, there's possibility that the coroutine just invoked a new one, but hierarchy restrict from execution of parent coroutine.
-					}
-					sit->proceeding_ = false;
+			std::scoped_lock mtx_context_lock(mtx_context_);
+			
+			using context_it = std::vector<std::shared_ptr<strand>>::iterator;
+			
+			for (context_it i = context_.begin(); i != context_.end(); ++i) {
+				// exchange will return the previous value,
+				// if it's true, the coroutine is already running.
+				if ((*i)->proceeding_.exchange(true)) {
+					continue;
 				}
-				
-				local_delayer.exec_delay();
-				// std::this_thread::sleep_for(std::chrono::seconds(1));
+				return *i;
 			}
-			log::debug("io_context::run has ended since no candidate async action is provided. I don't think it's something you expected. ");
+			return nullptr;
+		}
+		
+		void erase_coroutine(const std::shared_ptr<strand>& target)
+		{
+			std::scoped_lock lock(mtx_context_);
+			
+			std::erase_if(
+				context_,
+				[&](auto& x) {
+					return x == target;
+				}
+			);
 		}
 		
 		template <typename TAsyncAwaitable>
 		void spawn(TAsyncAwaitable &&coro)
 		{
-			// coro.h_.promise().slice_ = this;
-			auto &slice = context_.emplace_back(*this, coro.h_);
-			coro.h_.promise().slice_ = &slice;
+			std::scoped_lock mtx_context_lock(mtx_context_);
+			
+			std::shared_ptr<strand> slice = std::make_shared<strand>(*this, coro.coro_handle_);
+			coro.coro_handle_.promise().slice_ = slice;
+			context_.emplace_back(std::move(slice));
+		}
+		
+		bool empty()
+		{
+			std::scoped_lock lock(mtx_context_);
+			return context_.empty();
+		}
+		
+		void run()
+		{
+			delayer local_delayer{};
+			while (!empty()) {
+				local_delayer.reset();
+				// log::debug("local_delayer reset");
+				
+				std::shared_ptr<strand> sit = get_ready_coroutine();
+				// Usually, if a thread is here, there should be something to execute.
+				// Because the delayer automatically delays for the span to the the most
+				// earliest available coroutines.
+				if (!sit) {
+					// local_delayer.exec_delay();
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+					std::this_thread::yield();
+					continue;
+				}
+				
+				// log::debug("selected {}", sit->stacks());
+				// log::debug("mtx_context_lock unlock");
+				// If the condition is true, then the thread hasn't bound to
+				// any specific thread_slice currently.
+				
+				while (true) {
+					if (!sit->evaluate_condition(local_delayer)) {
+						break;
+					}
+					// Coroutine can call others and emplace them to the stack in io_context,
+					// but it mustn't resume coroutines behind.
+					// log::debug("resuming {}", sit->stacks());
+					sit->addresses_.top().resume();
+					
+					// The most efficient way for it:
+					// direct execute the coroutine by co_await, 
+					// and append it into the context list.
+					
+					// Case 1: The top coroutine appears to be done
+					// The struct ensures that only the top coroutine can be done at one execution.
+					if (auto &current_top = sit->addresses_.top(); current_top.done()) {
+						// destroy() should be called after value is obtained, not here.
+						sit->addresses_.pop();
+						if (sit->addresses_.empty()) {
+							// There's no other parents could destroy the root coroutine.
+							current_top.destroy();
+							erase_coroutine(sit);
+							break;
+						}
+					}
+					// Case 2: The top coroutine hasn't completed, 
+					// but still returned handling back.
+					// I shall go back to check the conditions...
+					// If the condition is still none, 
+					// there's possibility that the coroutine just invoked a new one, 
+					// but hierarchy restrict from execution of parent coroutine.
+				
+				}
+				// sit->proceeding_ must be set after while(true), since it keeps executing it.
+				// otherwise other threads may obtain it sneakily.
+				sit->proceeding_ = false;
+				local_delayer.exec_delay();
+			}
+			log::debug(
+				"io_context::run has ended since no candidate async action is provided\n",
+				"I don't think it's something you expect"
+			);
 		}
 	};
 	
 	struct deadline_timer
 	{
-		// Little struct does not necessarily need move convention
-		struct deadline_timer_condition : thread_slice::Condition
+		// Little struct does not necessarily need move constructor
+		struct deadline_timer_condition : strand::Condition
 		{
 			std::chrono::system_clock::time_point end_time_point_;
 			bool evaluate(delayer &local_delayer) override
@@ -697,7 +768,8 @@ namespace async
 				return local_delayer.before(end_time_point_);
 			}
 			~deadline_timer_condition() override = default;
-			deadline_timer_condition(std::chrono::system_clock::time_point end_time_point) : end_time_point_(end_time_point) {}
+			deadline_timer_condition(std::chrono::system_clock::time_point end_time_point) :
+				end_time_point_(end_time_point) {}
 		};
 		
 		struct deadline_timer_awaitable
@@ -706,9 +778,13 @@ namespace async
 			constexpr bool await_ready() { return false; }
 			void await_suspend(std::coroutine_handle<> parent_handle)
 			{
-				using casted_type = std::coroutine_handle<promise_type_base>;
-				auto *p_parent_handle_base = reinterpret_cast<casted_type *>(&parent_handle);
-				p_parent_handle_base->promise().slice_->condition_ = std::make_unique<deadline_timer_condition>(condition_);
+				auto parent_coro_handle =
+				std::coroutine_handle<promise_type_base>
+				::from_address(parent_handle.address());
+				
+				parent_coro_handle.promise().slice_.lock()->set_condition(
+					std::make_unique<deadline_timer_condition>(condition_)
+				);
 			}
 			constexpr void await_resume() {}
 		};
@@ -716,9 +792,81 @@ namespace async
 		auto expires_after(std::chrono::system_clock::duration dura)
 		{
 			return deadline_timer_awaitable{{std::chrono::system_clock::now() + dura}};
-			// I don't think it's a good idea. I thought out another way to implement it, I shall maintain an object that decides when to resume execution for each thread, it should be thread local only, since something is considered to be "event trigger? "
-			// Wait, constantly looping is definitely not I want, I shall still implement the system_clock based delay, and I should make it suspended if its event is not depleted.
+			// NOTE: use steady_clock for better performance
 		}
+	};
+	
+	template<typename Job>
+	class multi_executor
+	{
+	public:
+		using job_type = std::function<Job>;
+		
+		multi_executor(size_t thread_count)
+		{
+			for (size_t i = 0; i < thread_count; ++i) {
+				ioc.spawn(async_load(i));
+			}
+			
+			for (size_t i = 0; i < thread_count; ++i) {
+				threads.emplace_back(
+					[this]
+					{
+						ioc.run();
+					}
+				);
+			}
+		}
+		
+		void push(job_type job)
+		{
+			std::scoped_lock lock(queue_mutex_);
+			queue_.push(std::move(job));
+		}
+		
+		void shutdown()
+		{
+			shutting_down_ = true;
+		}
+		
+	private:
+		
+		shark::async::awaitable<int> async_load(int id)
+		{
+			// log::debug("Executing the job 0");
+			shark::async::deadline_timer timer;
+			
+			while (!shutting_down_) {
+				job_type job;
+				
+				{
+					std::scoped_lock lock(queue_mutex_);
+					if (!queue_.empty())
+					{
+						job = std::move(queue_.front());
+						queue_.pop();
+					}
+				}
+				// log::debug("Executing the job 1");
+				if (job) {
+					// log::debug("Executing the job 2");
+					job();
+				}
+				co_await timer.expires_after(
+					std::chrono::milliseconds(100)
+				);
+			}
+			// log::debug("Executing the job 2");
+			co_return 0;
+		}
+		
+		std::queue<job_type> queue_;
+		std::mutex queue_mutex_;
+		
+		std::atomic_bool shutting_down_ = false;
+		
+		shark::async::io_context ioc;
+		std::vector<std::thread> threads;
 	};
 
 }
