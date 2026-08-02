@@ -51,18 +51,12 @@ def get_batch(
 
 
 def resolve_runtime(
-    system_opt,
-    device_override: str | None = None,
-    dtype_override: str | None = None,
+    system_opt, device_override: str | None = None, dtype_override: str | None = None
 ) -> tuple[torch.device, torch.dtype]:
     dtype_name = dtype_override or system_opt.dtype
     device_name = device_override or system_opt.device
 
-    dtypes = {
-        "float32": torch.float32,
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-    }
+    dtypes = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
 
     if dtype_name not in dtypes:
         raise ValueError(f"unsupported dtype: {dtype_name}")
@@ -82,10 +76,7 @@ def enlarge_to_fit(x: Tensor, least_len: int, fill_value: int) -> Tensor:
     if raw_len >= least_len:
         return x
 
-    padding = x.new_full(
-        (least_len - raw_len,),
-        fill_value,
-    )
+    padding = x.new_full((least_len - raw_len,), fill_value)
 
     return torch.cat((x, padding), dim=0)
 
@@ -116,11 +107,7 @@ def report_tensor(name: str, tensor: Tensor) -> None:
         )
 
 
-def report_largest_gradient_norms(
-    model: torch.nn.Module,
-    *,
-    top_k: int = 10,
-) -> None:
+def report_largest_gradient_norms(model: torch.nn.Module, *, top_k: int = 10) -> None:
     results: list[tuple[float, str, float]] = []
 
     for name, parameter in model.named_parameters():
@@ -141,17 +128,10 @@ def report_largest_gradient_norms(
     print("Largest parameter gradients:", flush=True)
 
     for norm, name, abs_max in results[:top_k]:
-        print(
-            f"    {name}: norm={norm:.8e} abs_max={abs_max:.8e}",
-            flush=True,
-        )
+        print(f"    {name}: norm={norm:.8e} abs_max={abs_max:.8e}", flush=True)
 
 
-def report_nonfinite_gradients(
-    model: torch.nn.Module,
-    *,
-    step: int,
-) -> None:
+def report_nonfinite_gradients(model: torch.nn.Module, *, step: int) -> None:
     """Checker should report all bad gradients, not raise at the first parameter in model order"""
 
     found = False
@@ -194,11 +174,7 @@ def report_nonfinite_gradients(
         raise FloatingPointError(f"Raw backward produced non-finite gradients at step {step}")
 
 
-def check_gradients_finite(
-    model: torch.nn.Module,
-    *,
-    step: int,
-) -> None:
+def check_gradients_finite(model: torch.nn.Module, *, step: int) -> None:
     for name, parameter in model.named_parameters():
         gradient = parameter.grad
 
@@ -223,12 +199,7 @@ def check_gradients_finite(
             )
 
 
-def check_parameters_finite(
-    model: torch.nn.Module,
-    *,
-    step: int,
-    location: str,
-) -> None:
+def check_parameters_finite(model: torch.nn.Module, *, step: int, location: str) -> None:
     for name, parameter in model.named_parameters():
         finite = torch.isfinite(parameter)
 
@@ -243,11 +214,5 @@ def check_parameters_finite(
 
 def check_finite(name: str, x: Tensor):
     if not torch.isfinite(x).all():
-        print(
-            f"BAD TENSOR: {name}",
-            "max=",
-            x.max().item(),
-            "min=",
-            x.min().item(),
-        )
+        print(f"BAD TENSOR: {name}", "max=", x.max().item(), "min=", x.min().item())
         raise RuntimeError(f"Non-finite tensor: {name}")

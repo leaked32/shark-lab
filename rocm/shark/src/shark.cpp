@@ -293,7 +293,7 @@ std::string shark::file::read(std::string_view path) {
 	// Warning std::string_view is not null-terminated guaranteed.
 	std::ifstream file(std::string(path), std::ios::in | std::ios::binary);
 	if (!file.is_open()) {
-		shark::raise("Cannot open file: ", path);
+		shark::raise("Cannot open file: {}", path);
 	}
 
 	std::string str((std::istreambuf_iterator<char>(file)),

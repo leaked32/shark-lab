@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
+from dataclasses import fields
 
 import torch
 import torch.nn as nn
@@ -93,11 +94,7 @@ class SystemOption:
     dtype: str
 
     def __post_init__(self) -> None:
-        allowed_dtypes = {
-            "float32",
-            "float16",
-            "bfloat16",
-        }
+        allowed_dtypes = {"float32", "float16", "bfloat16"}
 
         if self.dtype not in allowed_dtypes:
             raise ValueError(
@@ -115,10 +112,7 @@ class manifest_options:
     system: SystemOption
 
 
-def require_section(
-    config: dict[str, Any],
-    name: str,
-) -> dict[str, Any]:
+def require_section(config: dict[str, Any], name: str) -> dict[str, Any]:
     section = config.get(name)
 
     if not isinstance(section, dict):
@@ -127,11 +121,8 @@ def require_section(
     return section
 
 
-def reject_unknown_fields(
-    section_name: str,
-    data: dict[str, Any],
-    allowed_fields: set[str],
-) -> None:
+def reject_unknown_fields(section_name: str, data: dict[str, Any], option_type: type) -> None:
+    allowed_fields = {field.name for field in fields(option_type)}
     unknown_fields = set(data) - allowed_fields
 
     if unknown_fields:
@@ -149,60 +140,11 @@ def load_manifest_options(path: str | Path) -> manifest_options:
     general_raw = require_section(raw, "general")
     train_raw = require_section(raw, "train")
     system_raw = require_section(raw, "system")
-
-    reject_unknown_fields(
-        "model",
-        model_raw,
-        {
-            "vocab",
-            "layer",
-            "chan",
-            "q_head",
-            "kv_head",
-            "mlp_mul",
-            "drop",
-            "eps",
-            "rope_theta",
-            "bias",
-        },
-    )
-
-    reject_unknown_fields(
-        "general",
-        general_raw,
-        {
-            "system_prompt",
-            "tokenizer_path",
-            "working_directory",
-        },
-    )
-
-    reject_unknown_fields(
-        "train",
-        train_raw,
-        {
-            "max_steps",
-            "log_interval",
-            "save_interval",
-            "save_independent_checkpoints",
-            "dataset_type",
-            "batch_count",
-            "dataset_sft_train",
-            "dataset_train",
-            "dataset_validation",
-            "corpus_block_size",
-            "optimizer_learning_rate",
-            "adamw_weight_decay",
-            "adamw_beta1",
-            "adamw_beta2",
-        },
-    )
-
-    reject_unknown_fields(
-        "system",
-        system_raw,
-        {"device", "dtype"},
-    )
+    
+    reject_unknown_fields("model", model_raw, GPTOption)
+    reject_unknown_fields("general", general_raw, GeneralOption)
+    reject_unknown_fields("train", train_raw, TrainOption)
+    reject_unknown_fields("system", system_raw, SystemOption)
 
     # `bias` is accepted in the TOML for compatibility but deliberately
     # not passed to GPTOption because the model does not support it yet.
@@ -245,17 +187,9 @@ def load_manifest_options(path: str | Path) -> manifest_options:
         adamw_beta2=float(train_raw["adamw_beta2"]),
     )
 
-    system = SystemOption(
-        device=str(system_raw["device"]),
-        dtype=str(system_raw["dtype"]),
-    )
+    system = SystemOption(device=str(system_raw["device"]), dtype=str(system_raw["dtype"]))
 
-    return manifest_options(
-        model=model,
-        general=general,
-        train=train,
-        system=system,
-    )
+    return manifest_options(model=model, general=general, train=train, system=system)
 
 
 def model_from_scratch(opt: manifest_options) -> GPT:
@@ -290,11 +224,7 @@ def _atomic_torch_save(data: dict[str, Any], path: str) -> None:
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
 
-    fd, temporary_path = tempfile.mkstemp(
-        dir=directory,
-        prefix=".checkpoint-",
-        suffix=".tmp",
-    )
+    fd, temporary_path = tempfile.mkstemp(dir=directory, prefix=".checkpoint-", suffix=".tmp")
     os.close(fd)
 
     try:
@@ -306,11 +236,7 @@ def _atomic_torch_save(data: dict[str, Any], path: str) -> None:
         raise
 
 
-def save_model_checkpoint(
-    path: str,
-    model: nn.Module,
-    step: int = 0,
-) -> None:
+def save_model_checkpoint(path: str, model: nn.Module, step: int = 0) -> None:
     """Save weights for inference or pretrained-model conversion."""
 
     checkpoint = {
@@ -324,10 +250,11 @@ def save_model_checkpoint(
     print(f"saved model checkpoint: {path}")
 
 
+CHECKPOINT_NAME = "shark-checkpoint"
+
+
 def load_model_checkpoint(
-    model: nn.Module,
-    path: str,
-    map_location: str | torch.device = "cpu",
+    model: nn.Module, path: str, map_location: str | torch.device = "cpu"
 ) -> int:
     if not os.path.isfile(path):
         raise FileNotFoundError(f"checkpoint not found: {path}")
@@ -345,10 +272,7 @@ def load_model_checkpoint(
 
 
 def save_training_checkpoint(
-    path: str,
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    next_step: int,
+    path: str, model: nn.Module, optimizer: torch.optim.Optimizer, next_step: int
 ) -> None:
     """Save everything needed to resume training."""
 
@@ -397,9 +321,7 @@ def load_training_checkpoint(
 
 
 def format_chat(
-    messages: list[dict[str, str]],
-    system_prompt: str,
-    add_generation_prompt: bool = True,
+    messages: list[dict[str, str]], system_prompt: str, add_generation_prompt: bool = True
 ) -> str:
     if not messages:
         raise ValueError("messages cannot be empty")
@@ -425,20 +347,13 @@ def format_chat(
 
 
 def text_ids(tokenizer, text: str) -> list[int]:
-    ids = tokenizer.encode(
-        text,
-        add_special_tokens=False,
-    ).ids
+    ids = tokenizer.encode(text, add_special_tokens=False).ids
     return ids
 
 
 def text_idx(tokenizer, text: str, device) -> Tensor:
     ids = text_ids(tokenizer, text)
-    idx = torch.tensor(
-        [ids],
-        dtype=torch.long,
-        device=device,
-    )
+    idx = torch.tensor([ids], dtype=torch.long, device=device)
 
     return idx
 
@@ -447,10 +362,7 @@ def idx_text(tokenizer, output, begin) -> str:
 
     generated_ids = output[0, begin:].detach().cpu().tolist()
 
-    reply = tokenizer.decode(
-        generated_ids,
-        skip_special_tokens=True,
-    )
+    reply = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
     return reply
 

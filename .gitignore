@@ -12,6 +12,14 @@ build/
 compile_commands.*
 CMakePresets.json
 *.kate-swp
+imgui/
+
+imgui.ini
+chatty.db
+chatty.json
+
+.clang-format
+
 
 # Data
 datasets/

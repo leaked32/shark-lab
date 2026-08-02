@@ -323,11 +323,7 @@ def demon_ui(opt: shark.format.manifest_options, engine: GenerationEngine, token
                 chat_text = shark.format.format_chat(
                     [{"role": "user", "content": prompt}], opt.train["system_prompt"]
                 )
-                idx = shark.format.text_idx(
-                    tokenizer,
-                    chat_text,
-                    engine.model.get_device(),
-                )
+                idx = shark.format.text_idx(tokenizer, chat_text, engine.model.get_device())
                 req = engine.add(idx, 128)
 
             except Exception as exc:
@@ -394,8 +390,7 @@ def demon_ui(opt: shark.format.manifest_options, engine: GenerationEngine, token
                     )
 
                     text = tokenizer.decode(
-                        req.input_ids[0].detach().cpu().tolist(),
-                        skip_special_tokens=False,
+                        req.input_ids[0].detach().cpu().tolist(), skip_special_tokens=False
                     )
                     requests_text.insert(tkinter.END, text + "\n\n")
 
@@ -478,20 +473,13 @@ def main() -> None:
     tokenizer, eos_token_id = shark.format.get_tokenizer(meta_opt["train"]["tokenizer_path"])
 
     opt = shark.format.manifest_options(meta_opt["model"], meta_opt["train"])
-    checkpoint_path = args.ckpt or os.path.join(
-        opt.train["working_directory"],
-        "ckpt.pt",
-    )
+    checkpoint_path = args.ckpt or os.path.join(opt.train["working_directory"], "ckpt.pt")
 
     # Construct and load on CPU before moving to the inference device.
     torch.set_default_device("cpu")
     model = shark.format.model_from_scratch(opt)
 
-    step = shark.format.load_model_checkpoint(
-        model,
-        checkpoint_path,
-        map_location="cpu",
-    )
+    step = shark.format.load_model_checkpoint(model, checkpoint_path, map_location="cpu")
     model.to(device=device, dtype=dtype)
     model.eval()
     print(f"loaded checkpoint step {step}")

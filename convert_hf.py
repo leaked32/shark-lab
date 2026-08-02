@@ -24,10 +24,7 @@ import torch.nn as nn
 from torch import Tensor as Tensor
 
 
-def validate_state_dict_compatibility(
-    model: nn.Module,
-    source_state: Mapping[str, Tensor],
-) -> None:
+def validate_state_dict_compatibility(model: nn.Module, source_state: Mapping[str, Tensor]) -> None:
     local_state = model.state_dict()
 
     missing = sorted(set(local_state) - set(source_state))
@@ -60,10 +57,7 @@ def validate_state_dict_compatibility(
     print(f"state dictionary validated: {len(local_state)} tensors")
 
 
-def load_hf_state_dict(
-    model: nn.Module,
-    hf_state: Mapping[str, Tensor],
-) -> None:
+def load_hf_state_dict(model: nn.Module, hf_state: Mapping[str, Tensor]) -> None:
     validate_state_dict_compatibility(model, hf_state)
 
     # load_state_dict already performs destination dtype/device conversion.
@@ -71,11 +65,7 @@ def load_hf_state_dict(
 
 
 def resolve_dtype(name: str) -> torch.dtype:
-    dtypes = {
-        "float32": torch.float32,
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-    }
+    dtypes = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
     return dtypes[name]
 
 
@@ -86,20 +76,13 @@ def main() -> None:
     parser.add_argument("--config", default="options.toml")
     parser.add_argument("--source", default=None)
     parser.add_argument("--output", default=None)
-    parser.add_argument(
-        "--dtype",
-        choices=["float32", "bfloat16", "float16"],
-        default="float32",
-    )
+    parser.add_argument("--dtype", choices=["float32", "bfloat16", "float16"], default="float32")
     args = parser.parse_args()
 
     opt = shark.format.load_manifest_options(args.config)
 
     source_path = args.source or opt.general.tokenizer_path
-    output_path = args.output or os.path.join(
-        opt.general.working_directory,
-        "pretrained.pt",
-    )
+    output_path = args.output or os.path.join(opt.general.working_directory, "pretrained.pt")
 
     # Conversion is deliberately performed on CPU.
     torch.set_default_device("cpu")
@@ -110,16 +93,10 @@ def main() -> None:
     print(f"loading Hugging Face model: {source_path}")
 
     hf_model = AutoModelForCausalLM.from_pretrained(
-        source_path,
-        torch_dtype="auto",
-        low_cpu_mem_usage=True,
-        device_map="cpu",
+        source_path, torch_dtype="auto", low_cpu_mem_usage=True, device_map="cpu"
     )
 
-    load_hf_state_dict(
-        local_model,
-        hf_model.state_dict(),
-    )
+    load_hf_state_dict(local_model, hf_model.state_dict())
 
     # Only do this when your GPT architecture requires tied embeddings.
     local_model.lm_head.weight = local_model.model.embed_tokens.weight
@@ -127,11 +104,7 @@ def main() -> None:
     if local_model.lm_head.weight.data_ptr() != local_model.model.embed_tokens.weight.data_ptr():
         raise RuntimeError("embedding weights were not tied")
 
-    shark.format.save_model_checkpoint(
-        output_path,
-        local_model,
-        step=0,
-    )
+    shark.format.save_model_checkpoint(output_path, local_model, step=0)
 
     del hf_model
     del local_model

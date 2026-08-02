@@ -91,7 +91,11 @@ Run ROCm experiments:
 ```bash
 cd rocm
 scons
-./build/hip-test/hip-test
+
+cmake --preset linux-x64-debug
+cmake --build build/linux-x64-debug
+./build/linux-x64-debug/hip-test/hip-test
+./build/linux-x64-debug/chatty/chatty
 ```
 
 For ROCm training runs, debugging asynchronous GPU failures may require:
@@ -129,4 +133,4 @@ The project is primarily intended for:
 
 APIs and internal implementations may change as the project evolves.
 
-black --line-length 100 .
+black --line-length 100 --skip-magic-trailing-comma .

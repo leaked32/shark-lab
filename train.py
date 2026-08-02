@@ -83,16 +83,8 @@ def make_sft_batch(
         raise RuntimeError("Unable to construct a non-empty SFT batch.")
 
     for i in range(len(lx)):
-        lx[i] = shark.util.enlarge_to_fit(
-            lx[i],
-            max_len,
-            eos_token_id,
-        )
-        ly[i] = shark.util.enlarge_to_fit(
-            ly[i],
-            max_len,
-            -1,
-        )
+        lx[i] = shark.util.enlarge_to_fit(lx[i], max_len, eos_token_id)
+        ly[i] = shark.util.enlarge_to_fit(ly[i], max_len, -1)
 
     x = torch.stack(lx, dim=0).long()
     y = torch.stack(ly, dim=0).long()
@@ -114,22 +106,16 @@ def train(opt: shark.format.manifest_options):
     optimizer = model.optimizer_adamw(
         opt.train.adamw_weight_decay,
         opt.train.optimizer_learning_rate,
-        (
-            opt.train.adamw_beta1,
-            opt.train.adamw_beta2,
-        ),
+        (opt.train.adamw_beta1, opt.train.adamw_beta2),
         opt.system.device,
     )
 
-    ckpt_path = os.path.join(opt.general.working_directory, "ckpt.pt")
+    ckpt_path = os.path.join(opt.general.working_directory, shark.format.CHECKPOINT_NAME)
     start_step = 0
 
     if os.path.exists(ckpt_path):
         start_step = shark.format.load_training_checkpoint(
-            ckpt_path,
-            model,
-            optimizer,
-            map_location=opt.system.device,
+            ckpt_path, model, optimizer, map_location=opt.system.device
         )
 
         print(f"Resuming training from step {start_step}.")
@@ -198,9 +184,7 @@ def train(opt: shark.format.manifest_options):
         match dataset_type:
             case 0:
                 x, y = shark.util.get_batch(
-                    opt.train.dataset_train,
-                    opt.train.corpus_block_size,
-                    batch_count,
+                    opt.train.dataset_train, opt.train.corpus_block_size, batch_count
                 )
 
             case 1:
@@ -283,12 +267,7 @@ def train(opt: shark.format.manifest_options):
     # ============================================================================================
 
     if max_steps > start_step:
-        shark.format.save_training_checkpoint(
-            ckpt_path,
-            model,
-            optimizer,
-            next_step=max_steps,
-        )
+        shark.format.save_training_checkpoint(ckpt_path, model, optimizer, next_step=max_steps)
 
         print(f"Training complete. Final checkpoint: {ckpt_path}")
     else:
@@ -298,9 +277,7 @@ def train(opt: shark.format.manifest_options):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train a GPT model from a configured dataset.")
     parser.add_argument(
-        "--config",
-        default="options.toml",
-        help="Path to the TOML configuration file.",
+        "--config", default="options.toml", help="Path to the TOML configuration file."
     )
     args = parser.parse_args()
 
@@ -308,11 +285,7 @@ def main() -> int:
     # opt_sys = meta_opt["system"]
 
     dtype_name = opt.system.dtype
-    dtype_map = {
-        "float32": torch.float32,
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-    }
+    dtype_map = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}
 
     if dtype_name not in dtype_map:
         raise ValueError(f"Unsupported dtype: {dtype_name!r}")

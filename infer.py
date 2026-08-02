@@ -40,11 +40,7 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", default=None)
-    parser.add_argument(
-        "--dtype",
-        choices=["float32", "bfloat16", "float16"],
-        default=None,
-    )
+    parser.add_argument("--dtype", choices=["float32", "bfloat16", "float16"], default=None)
     args = parser.parse_args()
 
     opt = shark.format.load_manifest_options(args.config)
@@ -59,20 +55,13 @@ def main() -> None:
 
     system_prompt = opt.general.system_prompt
 
-    checkpoint_path = args.ckpt or os.path.join(
-        opt.general.working_directory,
-        "ckpt.pt",
-    )
+    checkpoint_path = args.ckpt or os.path.join(opt.general.working_directory, shark.format.CHECKPOINT_NAME)
 
     # Construct and load on CPU before moving to the inference device.
     torch.set_default_device("cpu")
     model = shark.format.model_from_scratch(opt)
 
-    step = shark.format.load_model_checkpoint(
-        model,
-        checkpoint_path,
-        map_location="cpu",
-    )
+    step = shark.format.load_model_checkpoint(model, checkpoint_path, map_location="cpu")
 
     model.to(device=device, dtype=dtype)
     model.eval()
@@ -89,12 +78,7 @@ def main() -> None:
             print()
             break
 
-        history.append(
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        )
+        history.append({"role": "user", "content": prompt})
         text = shark.format.format_chat(history, system_prompt)
         idx = shark.format.text_idx(tokenizer, text, device)
         # idx = encode_prompt(tokenizer, prompt, device)
@@ -112,12 +96,7 @@ def main() -> None:
 
         print(f"AI: {reply}")
 
-        history.append(
-            {
-                "role": "assistant",
-                "content": reply,
-            }
-        )
+        history.append({"role": "assistant", "content": reply})
 
 
 if __name__ == "__main__":

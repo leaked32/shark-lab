@@ -1,129 +1,197 @@
-"""
-shark-lab
-collector_shot/collector_shot.py
-"""
-
+import argparse
 import json
+import os
+import re
 import time
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
+
 import requests
 import tomllib
-import re
-import os
-import argparse
-
-from typing import Any
-from dataclasses import dataclass
 
 # =========================
-# MAIN LOOP
+# CONSTANTS
 # =========================
 
 WIDTH = 100
-LINE = "+" + "-" * (WIDTH - 1) + "+"
+LINE = "+" + "-" * (WIDTH - 2) + "+"
+
+
+# =========================
+# DATA STRUCTURES
+# =========================
+
+
+@dataclass
+class GeneratorConfig:
+    endpoint: str
+    temperature: float
+    max_tokens: int
+    mode: str
+    epochs: int
+    scenario_index: int
+    output_prefix: str
+    failed_prefix: str
+    debug_prompt_check: bool
+
+
+
+@dataclass
+class ValidationConfig:
+    max_narration_score: int
+    max_actions_density: float
+    max_actions_only_ratio: float
+
+@dataclass
+class CollectorConfig:
+    generator: GeneratorConfig
+#     prompts: dict[str, PromptConfig]
+    # censored_terms: dict[str, list[str]]
+    validation: ValidationConfig
+
+
+@dataclass
+class CharacterConfig:
+    name: str
+    peer: str
+    card: str
+
+
+@dataclass
+class DatasetCaseConfig:
+    description: str
+    scenarios: list[str]
+    censored_terms: list[str]
+    min_turns: int
+    max_turns: int
+    examples: str
+    inject_prompts: str
+    template: str
+
+
+@dataclass
+class DatasetConfig:
+    character: CharacterConfig
+    datasets: dict[str, DatasetCaseConfig]
+
+
+# =========================
+# IO
+# =========================
+
+
+def load_toml(path: str) -> dict[str, Any]:
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def now() -> str:
+    return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+
+
+# =========================
+# CONFIG PARSER
+# =========================
+
+
+def load_collector_config(path: str) -> CollectorConfig:
+    raw = load_toml(path)
+    generator = GeneratorConfig(**raw["generator"])
+    # prompts = {name: PromptConfig(**value) for name, value in raw["prompts"].items()}
+    # censored_terms = {
+    #     name: value["terms"] for name, value in raw["censored_terms"].items() if value["enabled"]
+    # }
+    validation = ValidationConfig(**raw["validation"])
+    return CollectorConfig(
+        generator=generator, validation=validation
+    )
+
+
+def load_dataset_config(path: str) -> DatasetConfig:
+    raw = load_toml(path)
+    character = CharacterConfig(**raw["character"])
+    datasets = {name: DatasetCaseConfig(**value) for name, value in raw["datasets"].items()}
+    return DatasetConfig(character=character, datasets=datasets)
+
+
+# =========================
+# PRINT
+# =========================
 
 
 def row(key: str, value: str):
-    value = value[: WIDTH - 13]
-    print(f"| {key:<9}: {value:<{WIDTH - 13}}|")
+    value = value[: WIDTH - 14]
+    print(f"| {key:<9}: {value:<{WIDTH - 14}}|")
 
 
 def print_header(scenarios: list[str], scenario_index: int, epoch: int):
+    print()
+    print(LINE)
     row("Epoch", str(epoch))
-    # Do not change, index should align with python value for easy debugging
     row("Scenario", f"{scenario_index} / {len(scenarios) - 1}")
     row("Name", scenarios[scenario_index])
     print(LINE)
 
 
 def print_result(ok: bool, ok_count: int, total: int, error: str | None = None):
-    status = "PASS" if ok else "FAIL"
-    row("Status", status)
-    if error is not None:
-        row("Error", error or "")
-    row("Success", f"{ok_count} / {total}    {ok_count / max(total, 1):.1%}")
+    row("Status", "PASS" if ok else "FAIL")
+
+    if error:
+        row("Error", error)
+
+    row("Success", f"{ok_count} / {total} {ok_count / max(total, 1):.1%}")
+
     print(LINE)
 
 
 def print_except(status: str, except1: str, try1: str):
     row("Status", status)
-    # Do not change, index should align with python value for easy debugging
     row("Except", except1)
     row("Try", try1)
     print(LINE)
 
 
-def now():
-    return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-
-
-def load_meta_dataset(path: str):
-    with open(path, "rb") as f:
-        return tomllib.load(f)
-
-
 # =========================
-# CONFIG
+# LLM
 # =========================
 
 
-@dataclass
-class collector_options:
-    meta_options: dict[str, Any]
-    meta_dataset: dict[str, Any]
-
-
-def find_element_in_case(x: list, case: str) -> Any:
-    for xx in x:
-        # print(xx)
-        if xx["case"] == case and xx["enabled"] == True:
-            return xx["data"]
-    raise Exception(f"find_element_in_case cannot find such case: {case}")
-
-
-# PROMPT, BANNED_TERMS = get_prompt(mode)
-
-# =========================
-# LLM CALL
-# =========================
-
-
-def call_llm(options: collector_options, prompt: str) -> str:
-    RETRY_TIMEOUT = 90
-
+def call_llm(config: CollectorConfig, prompt: str) -> str:
+    retry_timeout = 90
+    
+    if config.generator.debug_prompt_check:
+        print(prompt)
+        print(len(prompt))
+        exit(0)
+    
     payload = {
         "model": "default",
         "messages": [{"role": "system", "content": prompt}],
-        "temperature": options.meta_options["config"]["temperature"],
-        "max_tokens": options.meta_options["config"]["max_tokens"],
+        "temperature": config.generator.temperature,
+        "max_tokens": config.generator.max_tokens,
     }
 
     while True:
         try:
-            r = requests.post(
-                options.meta_options["config"]["model_url"], json=payload, timeout=600
-            )
-            r.raise_for_status()
-
-            response = r.json()
-            return response["choices"][0]["message"]["content"]
+            response = requests.post(config.generator.endpoint, json=payload, timeout=600)
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
 
         except (
-            requests.exceptions.Timeout,
-            requests.exceptions.ConnectionError,
-            requests.exceptions.HTTPError,
             requests.exceptions.RequestException,
             json.JSONDecodeError,
             KeyError,
             IndexError,
             TypeError,
         ) as e:
+
             print_except(
-                "call_llm internal exception",
-                f"{type(e).__name__}: {e}",
-                f"Waiting {RETRY_TIMEOUT} seconds...",
+                "call_llm failed", f"{type(e).__name__}: {e}", f"retry after {retry_timeout}s"
             )
-            time.sleep(RETRY_TIMEOUT)
+
+            time.sleep(retry_timeout)
 
 
 # =========================
@@ -134,232 +202,169 @@ def call_llm(options: collector_options, prompt: str) -> str:
 DIALOGUE_RE = re.compile(r'"([^"\n]*)"')
 
 
-def raise_if_invalid_message_format(content: str):
+def validate_message_format(content: str):
     remaining = DIALOGUE_RE.sub("", content)
 
-    for sym in ('"', "(", ")"):
-        if sym in remaining:
-            raise Exception(f"forbidden character detected: {sym}")
+    for symbol in ('"', "(", ")"):
+        if symbol in remaining:
+            raise Exception(f"forbidden character: {symbol}")
 
 
-def merge_duplicate_roles(messages: list[dict[str, str]]) -> list[dict[str, str]]:
-    merged: list[dict[str, str]] = []
+def merge_duplicate_roles(messages: list[dict[str, str]]):
+    result = []
 
     for message in messages:
-        if merged and merged[-1]["role"] == message["role"]:
-            merged[-1]["content"] += "\n" + message["content"]
+        if result and result[-1]["role"] == message["role"]:
+            result[-1]["content"] += "\n" + message["content"]
         else:
-            merged.append(message)
+            result.append(message)
 
-    return merged
+    return result
+
+ROLE_PATTERN = re.compile(
+    r"^\s*(?:\*\*)?(?P<role>[^:*]+?)(?:\*\*)?\s*:\s*(?P<content>.*)$"
+)
 
 
-def build_dataset_from_dialogue(
-    options: collector_options, text: str
-) -> dict[str, list[dict[str, str]]]:
+def split_role_content(line: str) -> tuple[str, str] | None:
+    match = ROLE_PATTERN.match(line)
 
-    MAX_ACTION_ONLY_MESSAGES: float = options.meta_options["restrictions"][
-        "max_actions_only_messages"
-    ]
+    if match is None:
+        return None
 
-    if text[0] == '"' and text[-1] == '"':
+    return (
+        match.group("role").strip(),
+        match.group("content").strip(),
+    )
+
+def build_dialogue_dataset(
+    config: CollectorConfig, dataset: DatasetConfig, text: str, case: DatasetCaseConfig
+):
+    action_only = 0
+    messages = []
+
+    if text.startswith('"') and text.endswith('"'):
         text = text[1:-1]
 
-    lines = [line.strip() for line in text.splitlines() if ":" in line]
-    mode: str = options.meta_options["config"]["mode"]
+    for line in text.splitlines():
 
-    action_only_count = 0
-    messages: list[dict[str, str]] = []
-
-    for line in lines:
-        try:
-            role, content = line.split(":", 1)
-        except ValueError:
+        if ":" not in line:
             continue
 
+        sepa = split_role_content(line)
+        if sepa is None:
+            raise Exception(f"No role: {line}")
+        else:
+            role, content = sepa
+        
         role = role.strip().lower()
         content = content.strip()
-        content_lower = content.lower()
 
-        raise_if_invalid_message_format(content)
+        validate_message_format(content)
 
-        dialogues = DIALOGUE_RE.findall(content)
-        dialogue = " ".join(d.strip() for d in dialogues)
+        if not DIALOGUE_RE.findall(content):
+            action_only += 1
 
-        if not dialogue:
-            action_only_count += 1
-
-        for term in find_element_in_case(options.meta_options["censored_terms"], mode):
-            if term in content_lower:
+        for term in case.censored_terms:
+            if term.lower() in content.lower():
                 raise Exception(f"censored term: {term}")
 
-        if role == options.meta_dataset["character"]["name"].lower():
+        if (
+            role == dataset.character.name.lower() or
+            dataset.character.name.lower().startswith(role)
+            ):
             role = "assistant"
-        elif role == options.meta_dataset["character"]["peer"].lower():
+        elif role == dataset.character.peer.lower():
             role = "user"
         else:
             raise Exception(f"unknown role: {role}")
 
-        messages.append(
-            {
-                "role": role,
-                "content": content,
-            }
-        )
+        messages.append({"role": role, "content": content})
 
-    bmle = len(messages)
+    before_merge = len(messages)
 
     messages = merge_duplicate_roles(messages)
 
-    if bmle == 0 or len(messages) < 5:
-        raise Exception("too few turns")
-    # WARNING, len(messages) must be guaranteed to be greater than 0 here!
-    if (action_only_count - bmle) / bmle > MAX_ACTION_ONLY_MESSAGES:
-        raise Exception(f"too many action-only messages ({action_only_count})")
+    if before_merge == 0 or len(messages) < case.min_turns or len(messages) > case.max_turns:
+        raise Exception(f"invalid turn count {before_merge} {len(messages)}")
+
+    if action_only / before_merge > config.validation.max_actions_only_ratio:
+        raise Exception("too many action-only messages")
 
     return {"messages": messages}
 
 
-def validate(options: collector_options, text: str):
-    try:
-        obj = build_dataset_from_dialogue(options, text)
-        if obj is None:
-            return False, None, "json_unrecoverable"
-        if "messages" not in obj:
-            return False, None, "missing_messages"
-        return True, obj, None
-    except Exception as e:
-        return False, None, str(e)
-
-
 # =========================
-# LOGGING (UNIFIED)
+# SAVE
 # =========================
 
 
-def save_dataset(name_prefix: str, obj):
-    with open(f"{name_prefix}.jsonl", "a", encoding="utf-8") as f:
+def append_jsonl(path: str, obj: Any):
+    with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-
-
-def save_failed(name_prefix: str, entry, obj):
-    with open(f".log/{name_prefix}-failed.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps({"entry": entry, "raw": obj}, ensure_ascii=False) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-
-
-def log_debug(name_prefix: str, entry):
-    with open(f".log/{name_prefix}-log.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
 
 
 # =========================
-# ROLLOUT
+# GENERATION
 # =========================
 
 
-def rollout(options: collector_options, scenario: str) -> tuple[bool, str | None]:
-    character_name: str = options.meta_dataset["character"]["name"]
-    mode: str = options.meta_options["config"]["mode"]
-    prompt = find_element_in_case(options.meta_options["prompts"], mode)
-    prompt = prompt.format(
-        character_card=options.meta_dataset["character"]["card"],
-        character_scenario=scenario,
-        character_examples=(find_element_in_case(options.meta_dataset["examples"], mode)),
+def rollout(
+    config: CollectorConfig, dataset: DatasetConfig, case: DatasetCaseConfig, scenario: str
+) -> tuple[bool, dict[str, Any]]:
+
+    prompt = case.template.format(
+        character_card=dataset.character.card,
+        scenario=scenario,
+        examples=case.examples,
+        inject_prompts=case.inject_prompts,
     )
-    # options.meta_dataset["character"]["examples"]
-    # print(prompt)
-    # exit(0)
 
-    raw = call_llm(options, prompt)
-    ok, data, error = validate(options, raw)
-
-    entry = {
-        "timestamp": now(),
-        "status": "ok" if ok else "fail",
-        "scenario": scenario,
-    }
-
-    if not ok:
-        if error is not None:
-            entry["error"] = error
-        else:
-            entry["error"] = "Exception is None"
-
-    log_debug(options.meta_options["config"]["output_prefix"], entry)
-
-    if ok and isinstance(data, dict):
-
-        def inject_scenario(messages, scenario):
-            return [{"role": "system", "content": f"Scenario: {scenario}"}] + messages
-
-        save_dataset(
-            options.meta_options["config"]["output_prefix"],
-            {"messages": inject_scenario(data["messages"], scenario)},
-        )
-    else:
-        save_failed(options.meta_options["config"]["output_prefix"], entry, raw)
-
-    return ok, error
+    raw = call_llm(config, prompt)
+    try:
+        result = build_dialogue_dataset(config, dataset, raw, case)
+        result["messages"].insert(0, {"role": "system", "content": f"Scenario: {scenario}"})
+        return True, result
+    except Exception as e:
+        return False, {"raw": raw, "except": str(e)}
 
 
-def generate(options: collector_options) -> int:
-    def get_dataset_index(scenarios: list[str], y: int | str) -> int:
-        index: int
-        if isinstance(y, int):
-            index = y
-        elif isinstance(y, str):
-            index = scenarios.index(y)
-        return index
+def generate(config: CollectorConfig, dataset: DatasetConfig):
+    case = dataset.datasets[config.generator.mode]
+    scenarios = case.scenarios
+    index = config.generator.scenario_index
 
-    mode: str = options.meta_options["config"]["mode"]
-    scenarios = find_element_in_case(options.meta_dataset["scenarios"], mode)
-    scenario_index: int = get_dataset_index(
-        scenarios, options.meta_options["config"]["scenario_index"]
-    )
-    epoch = options.meta_options["config"]["epoch"]
+    for epoch in range(config.generator.epochs):
 
-    print(f"scenario count: {len(scenarios)}")
-    ok_count = 0
-    total = 0
+        for scenario in scenarios[index:]:
+            print_header(scenarios, index, epoch)
 
-    while True:
-        print()
-        print(LINE)
+            x, result = rollout(config, dataset, case, scenario)
+            if x:
+                append_jsonl(config.generator.output_prefix + ".jsonl", result)
+                print_result(True, 1, 1)
+            else:
+                append_jsonl(config.generator.failed_prefix + ".jsonl", result)
+                print_result(False, 0, 1, result["except"])
 
-        scenario = scenarios[scenario_index]
-        print_header(scenarios, scenario_index, epoch)
+            index += 1
 
-        ok, error = rollout(options, scenario)
+            if index >= len(scenarios):
+                index = 0
 
-        if ok:
-            ok_count += 1
 
-        total += 1
-        print_result(ok, ok_count, total, error)
-
-        time.sleep(1)
-
-        scenario_index = scenario_index + 1
-        if scenario_index == len(scenarios):
-            epoch -= 1
-            if epoch == 0:
-                print("task completed")
-                return 0
-            scenario_index = 0
+# =========================
+# MAIN
+# =========================
 
 
 if __name__ == "__main__":
-    # This scirpt works in current working directory by default.
-    parser = argparse.ArgumentParser(description="Generate text from a trained GPT checkpoint.")
-    parser.add_argument("--options", default="meta_options.toml")
-    parser.add_argument("--dataset", default="meta_dataset.toml")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--options", default="options.toml")
+    parser.add_argument("--dataset", default="dataset.toml")
     args = parser.parse_args()
 
-    options = collector_options(load_meta_dataset(args.options), load_meta_dataset(args.dataset))
-    exit(generate(options))
+    config = load_collector_config(args.options)
+    dataset = load_dataset_config(args.dataset)
+    generate(config, dataset)

@@ -464,10 +464,7 @@ class Norm1(nn.Module):
             # Compute the normalization statistic in FP32.
             acts_fp32 = acts.float()
 
-            mean_square = acts_fp32.square().mean(
-                dim=-1,
-                keepdim=True,
-            )
+            mean_square = acts_fp32.square().mean(dim=-1, keepdim=True)
 
             normalized = acts_fp32 * torch.rsqrt(mean_square + self.eps)
 
