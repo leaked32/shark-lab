@@ -152,7 +152,11 @@ services.
 
 ## Screenshot
 
-(...)
+<img width="1741" height="990" alt="chatty-demo-0" src="https://github.com/user-attachments/assets/9091dba2-7c52-4bf9-bc03-7724c2e0c6a5" />
+<img width="1739" height="992" alt="chatty-demo-1" src="https://github.com/user-attachments/assets/57b70183-ee83-481f-b4c0-721109e40cdb" />
+<img width="1915" height="1115" alt="chatty-demo-2" src="https://github.com/user-attachments/assets/6a511d31-0a36-41a3-9688-f4e3362633dc" />
+<img width="1911" height="1116" alt="chatty-demo-3" src="https://github.com/user-attachments/assets/dd73cd54-bd5c-4198-94da-1432de48abf9" />
+
 
 ## Build
 
