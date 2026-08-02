@@ -27,140 +27,6 @@ namespace json = boost::json;
 // LLAMA API
 // ==============================================================================================
 
-void chatty::send_message_llama(
-	ApplicationState& app_state, const boost::json::object& payload,
-	std::shared_ptr<chatty::dynamic_to_render> tmp_stream)
-{
-	// auto payload = this->prepare_payload(peer_id, self_id);
-	using namespace chatty;
-
-	namespace beast = boost::beast; // from <boost/beast.hpp>
-	namespace http = beast::http; // from <boost/beast/http.hpp>
-	namespace net = boost::asio; // from <boost/asio.hpp>
-
-	using tcp = net::ip::tcp; // from <boost/asio/ip/tcp.hpp>
-
-	auto host = app_state.uni_config_->server_address_;
-	auto port = app_state.uni_config_->server_port_;
-
-	try {
-		const std::string target = "/v1/chat/completions";
-
-		// === JSON Payload with streaming ===
-
-		std::string json_body = json::serialize(payload);
-		// shark::log::debug("payload: {}", json_body);
-
-		// === HTTP Connection ===
-		net::io_context ioc;
-		net::ip::tcp::resolver resolver(ioc);
-		beast::tcp_stream stream(ioc);
-
-		auto results = resolver.resolve(host, std::to_string(port));
-		stream.connect(results);
-
-		http::request<http::string_body> req{http::verb::post, target, 11};
-		req.set(http::field::host, host);
-		req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
-		req.set(http::field::content_type, "application/json");
-		req.body() = json_body;
-		req.prepare_payload();
-
-		http::write(stream, req);
-
-		// === Read streaming response ===
-		beast::flat_buffer buffer;
-		http::response_parser<http::string_body> parser;
-		parser.body_limit((std::numeric_limits<std::uint64_t>::max)());
-
-		std::string full_reply;
-		std::string pending;
-
-		while (!app_state.shutting_down()) {
-			beast::error_code ec;
-
-			http::read_some(stream, buffer, parser, ec);
-
-			if (ec == http::error::end_of_stream)
-				break;
-
-			if (ec)
-				throw beast::system_error(ec);
-
-			auto& msg = parser.get();
-
-			pending += msg.body();
-			msg.body().clear();
-
-			size_t line_end;
-
-			while ((line_end = pending.find('\n')) != std::string::npos) {
-				std::string line = pending.substr(0, line_end);
-				pending.erase(0, line_end + 1);
-
-				if (!line.starts_with("data: "))
-					continue;
-
-				std::string data = line.substr(6);
-
-				data.erase(0, data.find_first_not_of(" \t\r\n"));
-
-				if (data == "[DONE]")
-					goto done;
-
-				try {
-					auto obj = json::parse(data).as_object();
-					auto choices = obj["choices"].as_array();
-
-					if (choices.empty())
-						continue;
-
-					auto delta = choices[0].as_object()["delta"].as_object();
-
-					if (!delta.contains("content"))
-						continue;
-
-					if (!delta["content"].is_string())
-						continue;
-
-					std::string token = delta["content"].as_string().c_str();
-					// std::cout << token << std::flush;
-					full_reply += token;
-
-					if (tmp_stream) {
-						std::scoped_lock _(tmp_stream->tmp_mtx_stream);
-						if (tmp_stream->status == dynamic_to_render::status::INTERRUPTED) {
-							stream.socket().shutdown(tcp::socket::shutdown_both);
-							stream.socket().close();
-
-							return;
-						}
-						tmp_stream->tmp_stream += token;
-					}
-				} catch (const std::exception& e) {
-					shark::log::debug("JSON parse failed: {}", e.what());
-				}
-			}
-			if (parser.is_done())
-				break;
-		}
-
-	done:
-		stream.socket().shutdown(tcp::socket::shutdown_both);
-		stream.socket().close();
-
-		if (tmp_stream->on_completed.has_value()) {
-			tmp_stream->on_completed.value()(full_reply);
-		}
-		// this->insert_message(peer_id, self_id, full_reply);
-		tmp_stream->status = dynamic_to_render::status::COMPLETED;
-	} catch (const std::exception& e) {
-		tmp_stream->failed = true;
-		shark::raise("Error: {}", e.what());
-		// std::cerr << "Error: " << e.what() << std::endl;
-	}
-}
-
 std::optional<boost::json::object> chatty::prepare_payload(
 	ApplicationState& app_state, uint32_t peer_id, uint32_t self_id)
 {
@@ -181,9 +47,11 @@ std::optional<boost::json::object> chatty::prepare_payload(
 
 	const peer& peer_info = *peer_info_opt;
 	if (peer_info.card.empty()) {
-		ActivityModalText modal{
-			std::format("failed to load character card for peer: peer_id {}", peer_id), "Error"};
-		app_state.states_.emplace_back(std::make_unique<ActivityModalText>(std::move(modal)));
+		app_state.modal_text(
+			std::format("failed to load character card for peer: peer_id {}\n"
+						"Empty character card is considered an exception checkpoint",
+						peer_id),
+			"Exception");
 		shark::log::exception("failed to load character card for peer: peer_id {}", peer_id);
 		return std::nullopt;
 	}
@@ -269,4 +137,144 @@ std::optional<boost::json::object> chatty::prepare_payload(
 						{"temperature", 1.2},
 						{"max_tokens", 1024},
 						{"stream", true}};
+}
+
+void chatty::send_message_llama(
+	ApplicationState& app_state, const boost::json::object& payload,
+	std::shared_ptr<chatty::dynamic_to_render> tmp_stream)
+{
+	// auto payload = this->prepare_payload(peer_id, self_id);
+	using namespace chatty;
+
+	namespace beast = boost::beast; // from <boost/beast.hpp>
+	namespace http = beast::http; // from <boost/beast/http.hpp>
+	namespace net = boost::asio; // from <boost/asio.hpp>
+
+	using tcp = net::ip::tcp; // from <boost/asio/ip/tcp.hpp>
+
+	auto host = app_state.uni_config_->server_address_;
+	auto port = app_state.uni_config_->server_port_;
+
+	try {
+		const std::string target = "/v1/chat/completions";
+
+		// === JSON Payload with streaming ===
+
+		std::string json_body = json::serialize(payload);
+		// shark::log::debug("payload: {}", json_body);
+
+		// === HTTP Connection ===
+		net::io_context ioc;
+		net::ip::tcp::resolver resolver(ioc);
+		beast::tcp_stream stream(ioc);
+
+		auto results = resolver.resolve(host, std::to_string(port));
+		stream.connect(results);
+
+		http::request<http::string_body> req{http::verb::post, target, 11};
+		req.set(http::field::host, host);
+		req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+		req.set(http::field::content_type, "application/json");
+		req.body() = json_body;
+		req.prepare_payload();
+
+		http::write(stream, req);
+
+		// === Read streaming response ===
+		beast::flat_buffer buffer;
+		http::response_parser<http::string_body> parser;
+		parser.body_limit((std::numeric_limits<std::uint64_t>::max)());
+
+		std::string full_reply;
+		std::string pending;
+
+		while ((!app_state.shutting_down()) &&
+			   tmp_stream->status == dynamic_to_render::status::STREAMING)
+		{
+			beast::error_code ec;
+
+			http::read_some(stream, buffer, parser, ec);
+
+			if (ec == http::error::end_of_stream) {
+				break;
+			}
+			if (ec) {
+				throw beast::system_error(ec);
+			}
+			auto& msg = parser.get();
+
+			pending += msg.body();
+			msg.body().clear();
+
+			size_t line_end;
+
+			while ((line_end = pending.find('\n')) != std::string::npos) {
+				std::string line = pending.substr(0, line_end);
+				pending.erase(0, line_end + 1);
+
+				if (!line.starts_with("data: "))
+					continue;
+
+				std::string data = line.substr(6);
+
+				data.erase(0, data.find_first_not_of(" \t\r\n"));
+
+				if (data == "[DONE]")
+					goto done;
+
+				try {
+					auto obj = json::parse(data).as_object();
+					auto choices = obj["choices"].as_array();
+
+					if (choices.empty())
+						continue;
+
+					auto delta = choices[0].as_object()["delta"].as_object();
+
+					if (!delta.contains("content"))
+						continue;
+
+					if (!delta["content"].is_string())
+						continue;
+
+					std::string token = delta["content"].as_string().c_str();
+					// std::cout << token << std::flush;
+					full_reply += token;
+
+					if (tmp_stream) {
+						std::scoped_lock _(tmp_stream->tmp_mtx_stream);
+						if (tmp_stream->status == dynamic_to_render::status::INTERRUPTED) {
+							stream.socket().shutdown(tcp::socket::shutdown_both);
+							stream.socket().close();
+
+							return;
+						}
+						tmp_stream->tmp_stream += token;
+					}
+				} catch (const std::exception& e) {
+					shark::log::debug("JSON parse failed: {}", e.what());
+				}
+			}
+			if (parser.is_done())
+				break;
+		}
+
+	done:
+		stream.socket().shutdown(tcp::socket::shutdown_both);
+		stream.socket().close();
+
+		if (tmp_stream->status == dynamic_to_render::status::STREAMING) {
+			if (tmp_stream->on_completed.has_value()) {
+				tmp_stream->on_completed.value()(full_reply);
+			}
+			// this->insert_message(peer_id, self_id, full_reply);
+			tmp_stream->status = dynamic_to_render::status::COMPLETED;
+		}
+	} catch (const std::exception& e) {
+		tmp_stream->status = dynamic_to_render::status::INTERRUPTED;
+		app_state.modal_text(std::format("chatty::send_message_llama: {}", e.what()), "Error");
+		shark::log::exception("chatty::send_message_llama: {}", e.what());
+		return;
+		// std::cerr << "Error: " << e.what() << std::endl;
+	}
 }

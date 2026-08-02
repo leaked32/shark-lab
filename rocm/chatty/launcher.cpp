@@ -48,7 +48,9 @@ void RenderLoginPanel(
 	ImGui::Text("Select identity:");
 	ImGui::Separator();
 
-	if (ImGui::BeginListBox("##peers", ImVec2(-FLT_MIN, -300.F))) {
+	float button_height = ImGui::GetFrameHeightWithSpacing() * 2.0f;
+	float list_height = ImGui::GetContentRegionAvail().y - button_height;
+	if (ImGui::BeginListBox("##peers", ImVec2(-FLT_MIN, list_height))) {
 		for (const auto& peer : *peers) {
 			const bool active = act_state.selected_peer_id_ == peer.id;
 			const std::string label = peer.name + "##" + std::to_string(peer.id);
@@ -121,7 +123,9 @@ void RenderChatPanel(
 
 	ImGui::BeginChild("Peers", ImVec2(left_width, 0), true);
 
-	if (ImGui::BeginListBox("##MyListBox", ImVec2(-FLT_MIN, 300.0f))) {
+	float button_height = ImGui::GetFrameHeightWithSpacing() * 2.0f;
+	float list_height = ImGui::GetContentRegionAvail().y - button_height;
+	if (ImGui::BeginListBox("##MyListBox", ImVec2(-FLT_MIN, list_height))) {
 		for (const auto& peer : *peers) {
 			if (app_state.self_id_ == peer.id) {
 				continue;
@@ -225,16 +229,14 @@ void RenderChatPanel(
 				ImGui::TextUnformatted(streamed_text.c_str());
 
 				if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-					app_state.states_.emplace_back(
-						std::make_unique<ActivityModalText>(streamed_text, "Inspect"));
+					app_state.modal_text(streamed_text, "Inspect");
 					ImGui::SetClipboardText(streamed_text.c_str());
 				}
 			}
 			else {
 				ImGui::TextUnformatted(msg.content.c_str());
 				if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-					app_state.states_.emplace_back(
-						std::make_unique<ActivityModalText>(msg.content, "Inspect"));
+					app_state.modal_text(msg.content, "Inspect");
 					ImGui::SetClipboardText(msg.content.c_str());
 				}
 			}
@@ -254,8 +256,14 @@ void RenderChatPanel(
 
 	auto remove_failed_streams = [&messages = state.selected_peer_messages]()
 	{
-		std::erase_if(messages, [](const message_to_render& message)
-					  { return message.tmp_stream != nullptr && message.tmp_stream->failed; });
+		std::erase_if(messages,
+					  [](const message_to_render& message)
+					  {
+						  return message.tmp_stream != nullptr &&
+							  message.tmp_stream->status ==
+							  chatty::dynamic_to_render::status::INTERRUPTED;
+						  ;
+					  });
 	};
 	remove_failed_streams();
 
@@ -290,7 +298,7 @@ void RenderChatPanel(
 					auto payload =
 						chatty::prepare_payload(app_state, selected_peer_id, app_state.self_id_);
 					if (!payload.has_value()) {
-						tmp_stream->failed = true;
+						tmp_stream->status = chatty::dynamic_to_render::status::INTERRUPTED;
 						return;
 					}
 
@@ -323,6 +331,7 @@ void RenderChatPanel(
 				std::scoped_lock lock(it->tmp_stream->tmp_mtx_stream);
 				if (it->tmp_stream->status == chatty::dynamic_to_render::status::STREAMING) {
 					it->tmp_stream->status = chatty::dynamic_to_render::status::INTERRUPTED;
+					// it->tmp_stream->failed = true;
 					state.selected_peer_messages.erase(it);
 					break;
 				}
@@ -359,8 +368,7 @@ void RenderChatPanel(
 				item.emplace("text", msg.content);
 				logs.push_back(std::move(item));
 			}
-			app_state.states_.emplace_back(
-				std::make_unique<ActivityModalText>(boost::json::serialize(logs), "Dump Logs"));
+			app_state.modal_text(boost::json::serialize(logs), "Dump Logs");
 		}
 	}
 
@@ -390,6 +398,10 @@ void setup_chatty_theme(
 	style.Colors[ImGuiCol_ButtonHovered] = cfg.button_hovered_.get<ImVec4>();
 	style.Colors[ImGuiCol_ButtonActive] = cfg.button_active_.get<ImVec4>();
 	style.Colors[ImGuiCol_Text] = cfg.text_.get<ImVec4>();
+
+	style.Colors[ImGuiCol_TitleBg] = cfg.window_bg_.get<ImVec4>();
+	style.Colors[ImGuiCol_TitleBgActive] = cfg.window_bg_.get<ImVec4>();
+	style.Colors[ImGuiCol_TitleBgCollapsed] = cfg.window_bg_.get<ImVec4>();
 }
 void draw_background(
 	const shark::media::texture& tex)
@@ -419,8 +431,8 @@ void draw_background(
 	}
 
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
-
 	ImGui::SetNextWindowSize(screen);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 
 	ImGui::Begin("##background", nullptr,
 				 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
@@ -429,6 +441,7 @@ void draw_background(
 	ImGui::Image((ImTextureID)(intptr_t)tex.id, screen, uv0, uv1);
 
 	ImGui::End();
+	ImGui::PopStyleVar();
 }
 
 int main(

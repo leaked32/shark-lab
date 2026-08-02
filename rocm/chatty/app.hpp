@@ -82,9 +82,7 @@ struct ApplicationState
 	// bool show_lorebook_window;
 
 	std::vector<std::unique_ptr<ActivityState>> states_ = {};
-
 	std::unique_ptr<chatty::db> uni_db_ = nullptr;
-
 	std::unique_ptr<chatty::config> uni_config_ = nullptr;
 
 	uint32_t self_id_ = 0;
@@ -101,6 +99,11 @@ struct ApplicationState
 	bool shutting_down() const
 	{
 		return shutting_down_;
+	}
+	void modal_text(const std::string& text, const std::string& title = "Modal Text")
+	{
+		ActivityModalText modal{text, title};
+		this->states_.emplace_back(std::make_unique<ActivityModalText>(std::move(modal)));
 	}
 
   private:
