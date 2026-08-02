@@ -586,8 +586,8 @@ namespace async
 					if (slice) {
 						log::debug(
 							"slice: {}; current coroutine: {}; exception what: {}",
-							(unsigned long)slice.lock().get(), 
-							(unsigned long)slice.lock()->addresses_.top().address(), exc.what()
+							(unsigned long)slice.get(), 
+							(unsigned long)slice->addresses_.top().address(), exc.what()
 						);
 					}
 				}

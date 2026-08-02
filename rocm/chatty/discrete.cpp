@@ -28,7 +28,7 @@ struct lore_entry_ui {
 static std::vector<lore_entry_ui> lore_entries;
 
 void RenderLorebookWindow(
-	std::unique_ptr<chatty::db> &uni_db,
+	std::unique_ptr<chatty::db>& uni_db,
 	std::optional<chatty::peer> selected_peer_info
 )
 {
@@ -133,16 +133,17 @@ void RenderLorebookWindow(
 	ImGui::EndPopup();
 }
 
-void ShowMessageBox(const char* title, std::unique_ptr<std::string>& message)
+void RenderModalText(
+	ApplicationState& app_state,
+	ActivityModalText& modal_text
+)
 {
-	bool open = message != nullptr;
-	
-	if (open)
-		ImGui::OpenPopup(title);
-	
-	if (ImGui::BeginPopupModal(
-		title,
-		&open,
+	ImGui::SetNextWindowPos(ImVec2(0, 0));
+	ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+	// const char* title, std::unique_ptr<std::string>& message
+	if (ImGui::Begin(
+		modal_text.title_.c_str(),
+		&modal_text.open,
 		ImGuiWindowFlags_None))
 	{
 		// Make a temporary buffer
@@ -160,7 +161,7 @@ void ShowMessageBox(const char* title, std::unique_ptr<std::string>& message)
 			ImVec2(avail.x, avail.y - button_height));
 		
 		ImGui::PushTextWrapPos();
-		ImGui::TextUnformatted(message->c_str());
+		ImGui::TextUnformatted(modal_text.text_.c_str());
 		ImGui::PopTextWrapPos();
 		
 		ImGui::EndChild();
@@ -171,22 +172,17 @@ void ShowMessageBox(const char* title, std::unique_ptr<std::string>& message)
 		 *				 ImGuiInputTextFlags_ReadOnly);
 		 */
 		if (ImGui::Button("Copy"))
-			ImGui::SetClipboardText(message->c_str());
+			ImGui::SetClipboardText(modal_text.text_.c_str());
 		
 		ImGui::SameLine();
 		
 		if (ImGui::Button("OK"))
 		{
-			message = nullptr;
-			ImGui::CloseCurrentPopup();
+			modal_text.open = false;
+			// ImGui::CloseCurrentPopup();
 		}
 		
-		ImGui::EndPopup();
-	}
-	
-	if (!open)
-	{
-		message = nullptr;
+		ImGui::End();
 	}
 }
 
@@ -260,7 +256,7 @@ void RenderPeerEditorWindow(
 				peer_state.selected_peer_id_ = 0;
 				peer_state.open = false;
 				
-				ImGui::CloseCurrentPopup();
+				// ImGui::CloseCurrentPopup();
 			}
 		}
 		

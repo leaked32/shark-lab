@@ -13,7 +13,7 @@
 #include "shark/shark.hpp"
 
 enum class Activitie {
-	INVALID, LOGIN, CHAT, PEER_EDITOR, LOREBOOK,
+	INVALID, LOGIN, CHAT, PEER_EDITOR, LOREBOOK, MODAL_TEXT
 };
 
 struct message_to_render {
@@ -63,6 +63,17 @@ struct ActivityChat : ActivityState {
 	}
 };
 
+struct ActivityModalText : ActivityState {
+	ActivityModalText(const std::string& text, const std::string& title) :
+		ActivityState{ Activitie::MODAL_TEXT }, text_{text}, title_(title)
+	{
+		
+	}
+	
+	std::string text_;
+	std::string title_;
+};
+
 struct ApplicationState {
 	// Activities activitie;
 	// bool open = false;
@@ -104,4 +115,7 @@ void RenderLorebookWindow(
 	std::optional<chatty::peer> selected_peer_info
 );
 
-void ShowMessageBox(const char* title, std::unique_ptr<std::string>& message);
+void RenderModalText(
+	ApplicationState& app_state,
+	ActivityModalText& modal_text
+);

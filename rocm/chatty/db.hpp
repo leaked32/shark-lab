@@ -89,6 +89,7 @@ struct dynamic_to_render {
 		COMPLETED
 	} status = status::STREAMING;
 	std::optional<std::function<void(const std::string& reply)>> on_completed = std::nullopt;
+	std::atomic_bool failed = false;
 	dynamic_to_render() {};
 };
 

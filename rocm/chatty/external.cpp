@@ -159,14 +159,15 @@ void chatty::send_message_llama(
 		// this->insert_message(peer_id, self_id, full_reply);
 		tmp_stream->status = dynamic_to_render::status::COMPLETED;
 	} catch (const std::exception &e) {
+		tmp_stream->failed = true;
 		shark::raise("Error: {}", e.what());
 		// std::cerr << "Error: " << e.what() << std::endl;
 	}
 }
 
 
-boost::json::object chatty::prepare_payload(
-	db& c_db, uint32_t peer_id, uint32_t self_id
+std::optional<boost::json::object> chatty::prepare_payload(
+	ApplicationState& app_state, uint32_t peer_id, uint32_t self_id
 ) 
 {
 	constexpr size_t MODEL_CONTEXT = 4096;
@@ -176,18 +177,26 @@ boost::json::object chatty::prepare_payload(
 	
 	constexpr size_t CONTEXT_BUDGET = MODEL_CONTEXT - RESPONSE_BUDGET - SAFETY_MARGIN;
 	
-	auto messages = c_db.get_messages_for_peer(peer_id, self_id);
-	auto lore_entries = c_db.get_lorebook_for_peer(peer_id);
+	auto messages = app_state.uni_db_->get_messages_for_peer(peer_id, self_id);
+	auto lore_entries = app_state.uni_db_->get_lorebook_for_peer(peer_id);
 	
-	std::optional<peer> peer_info_opt = c_db.get_peer_by_id(peer_id);
+	std::optional<peer> peer_info_opt = app_state.uni_db_->get_peer_by_id(peer_id);
 	if (!peer_info_opt.has_value()) {
 		shark::raise("peer does not exist in database: peer_id {}", peer_id);
 	}
 	
 	const peer &peer_info = *peer_info_opt;
 	if (peer_info.card.empty()) {
-		shark::raise("failed to load character card for peer: peer_id {}",
-					 peer_id);
+		
+		ActivityModalText modal {
+			std::format("failed to load character card for peer: peer_id {}", peer_id),
+			"Error"
+		};
+		app_state.states_.emplace_back(
+			std::make_unique<ActivityModalText>(std::move(modal))
+		);
+		shark::log::exception("failed to load character card for peer: peer_id {}", peer_id);
+		return std::nullopt;
 	}
 	
 	std::string context_text;

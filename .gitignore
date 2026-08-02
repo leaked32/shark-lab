@@ -17,6 +17,8 @@ imgui/
 imgui.ini
 chatty.db
 chatty.json
+*.db
+
 
 .clang-format
 

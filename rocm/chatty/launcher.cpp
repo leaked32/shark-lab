@@ -48,7 +48,7 @@ void RenderLoginPanel(
 	
 	if (ImGui::BeginListBox(
 		"##peers",
-		ImVec2(-FLT_MIN, -FLT_MIN)
+		ImVec2(-FLT_MIN, -300.F)
 	)) {
 		for (int i = 0; i < peers.size(); i++) {
 			bool active = selected == i;
@@ -66,6 +66,15 @@ void RenderLoginPanel(
 		
 		ImGui::EndListBox();
 	}
+	
+	
+	if (ImGui::Button("Add Peer")) {
+		ActivityPeerEditor peer_editor { ActivityPeerEditor::Mode::create };
+		app_state.states_.emplace_back(
+			std::make_unique<ActivityPeerEditor>(std::move(peer_editor))
+		);
+	}
+	
 	ImGui::EndChild();
 	ImGui::SameLine();
 	
@@ -108,7 +117,7 @@ void chat_loop(
 	// uint32_t selected_peer_id;
 	// std::optional<chatty::peer> selected_peer_info = std::nullopt;
 	
-	std::unique_ptr<std::string> modal_text_content = nullptr;
+	// std::unique_ptr<std::string> modal_text_content = nullptr;
 	
 	size_t selected = 0;
 	// std::vector<message_to_render> selected_peer_messages;
@@ -169,6 +178,9 @@ void chat_loop(
 	
 	if (ImGui::Button("Add Peer")) {
 		ActivityPeerEditor peer_editor { ActivityPeerEditor::Mode::create };
+		app_state.states_.emplace_back(
+			std::make_unique<ActivityPeerEditor>(std::move(peer_editor))
+		);
 	}
 	
 	static bool confirm_delete = false;
@@ -248,16 +260,34 @@ void chat_loop(
 				if (ImGui::IsItemHovered() &&
 					ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
 				{
-					modal_text_content = std::make_unique<std::string>(std::string(msg.content));
-					// ImGui::SetClipboardText(msg1.c_str());
+					
+					ActivityModalText modal {
+						msg.content,
+						"Inspect"
+					};
+					app_state.states_.emplace_back(
+						std::make_unique<ActivityModalText>(std::move(modal))
+					);
+					// modal_text_content =
+					//	std::make_unique<std::string>(std::string(msg.content));
+					ImGui::SetClipboardText(msg1.c_str());
 				}
 			} else {
 				ImGui::TextUnformatted(msg.content.c_str());
 				if (ImGui::IsItemHovered() &&
 					ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
 				{
-					modal_text_content = std::make_unique<std::string>(std::string(msg.content));
-					// ImGui::SetClipboardText(msg.content.c_str());
+					
+					ActivityModalText modal {
+						msg.content,
+						"Inspect"
+					};
+					app_state.states_.emplace_back(
+						std::make_unique<ActivityModalText>(std::move(modal))
+					);
+					// modal_text_content =
+					//	std::make_unique<std::string>(std::string(msg.content));
+					ImGui::SetClipboardText(msg.content.c_str());
 				}
 			}
 			
@@ -293,6 +323,28 @@ void chat_loop(
 		);
 		input[0] = 0; // clear input
 	};
+	
+	auto lam_remove =
+	[&selected_peer_messages = state.selected_peer_messages]
+	() {
+		selected_peer_messages.erase(
+			std::remove_if(
+				selected_peer_messages.begin(), 
+				selected_peer_messages.end(),
+				[](message_to_render& act) {
+					if (act.tmp_stream == nullptr) {
+						return false;
+					}
+					return bool(act.tmp_stream->failed);
+				}
+			),
+			selected_peer_messages.end()
+		);
+	};
+	
+	lam_remove();
+	
+	
 	auto lam_signal = [&] {
 		// ImGuiInputTextFlags_EnterReturnsTrue
 		// If current peer is set, then the shared string will be dropped so
@@ -318,11 +370,16 @@ void chat_loop(
 				selected_peer_id = state.selected_peer_info.value().id,
 				tmp_stream, &app_state
 			] () -> void {
-				auto payload = prepare_payload(
-					*app_state.uni_db_, selected_peer_id, app_state.self_id_
+				auto payload = chatty::prepare_payload(
+					app_state, selected_peer_id, app_state.self_id_
 				);
+				if (!payload.has_value()) {
+					tmp_stream->failed = true;
+					return;
+				}
+				
 				chatty::send_message_llama(
-					app_state, payload, tmp_stream
+					app_state, payload.value(), tmp_stream
 				);
 			}
 		);
@@ -337,6 +394,7 @@ void chat_loop(
 		// selected_peer_messages.emplace_back(chatty::message{.sender_id =
 		// self_id, .reader_id = selected_peer_id })
 	};
+	
 	
 	if (state.selected_peer_info.has_value()) {
 		if (ImGui::Button("Load")) {
@@ -359,7 +417,7 @@ void chat_loop(
 						it->tmp_stream->status =
 						chatty::dynamic_to_render::status::INTERRUPTED;
 						state.selected_peer_messages.erase(it);
-					break;
+						break;
 					}
 				}
 			}
@@ -414,8 +472,13 @@ void chat_loop(
 				preo.emplace("text", msg.content);
 				pre.push_back(std::move(preo));
 			}
-			modal_text_content = std::make_unique<std::string>(
-				boost::json::serialize(pre));
+			ActivityModalText modal {
+				boost::json::serialize(pre),
+				"Dump Logs"
+			};
+			app_state.states_.emplace_back(
+				std::make_unique<ActivityModalText>(std::move(modal))
+			);
 		}
 	}
 	
@@ -424,7 +487,7 @@ void chat_loop(
 	// Call every frame
 	// RenderPeerEditorWindow(peer_editor, peers, uni_db, self_id);
 	// RenderLorebookWindow(uni_db, state.selected_peer_info);
-	ShowMessageBox("Modal Text", modal_text_content);
+	// ShowMessageBox("Modal Text", modal_text_content);
 	ImGui::End();
 }
 
@@ -513,6 +576,10 @@ int main()
 			case Activitie::PEER_EDITOR: {
 				auto* ptr = dynamic_cast<ActivityPeerEditor*>(last_activity.get());
 				RenderPeerEditorWindow(*state, *ptr);
+			break; }
+			case Activitie::MODAL_TEXT: {
+				auto* ptr = dynamic_cast<ActivityModalText*>(last_activity.get());
+				RenderModalText(*state, *ptr);
 			break; }
 			default: {
 				shark::raise(
