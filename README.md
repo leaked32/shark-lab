@@ -44,8 +44,6 @@ scripts/
 rocm/
   shark/            ROCm-related utilities
   hip-test/         HIP kernel experiments
-
-applications/
   chatty/           Native C++ Dear ImGui LLM chat client
 ```
 
@@ -154,7 +152,7 @@ services.
 
 ## Screenshot
 
-(Add screenshot here)
+(...)
 
 ## Build
 
