@@ -10,7 +10,11 @@
 #pragma once
 #include "db.hpp"
 #include "shark/shark.hpp"
+#include <atomic>
+#include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 enum class Activitie { INVALID, LOGIN, CHAT, PEER_EDITOR, LOREBOOK, MODAL_TEXT };
 
@@ -54,7 +58,6 @@ struct ActivityPeerEditor : ActivityState
 
 struct ActivityChat : ActivityState
 {
-	std::optional<chatty::peer> selected_peer_info;
 	std::vector<message_to_render> selected_peer_messages;
 	char input[1024] = {};
 
@@ -80,8 +83,6 @@ struct ApplicationState
 
 	std::vector<std::unique_ptr<ActivityState>> states_ = {};
 
-	int editing_peer_id_ = -1;
-	std::vector<chatty::peer> peers_ = {};
 	std::unique_ptr<chatty::db> uni_db_ = nullptr;
 
 	std::unique_ptr<chatty::config> uni_config_ = nullptr;
@@ -108,7 +109,6 @@ struct ApplicationState
 
 void RenderPeerEditorWindow(ApplicationState& app_state, ActivityPeerEditor& peer_state);
 
-void RenderLorebookWindow(ApplicationState& app_state,
-						  std::optional<chatty::peer> selected_peer_info);
+void RenderLorebookWindow(ApplicationState& app_state, uint32_t selected_peer_id);
 
 void RenderModalText(ApplicationState& app_state, ActivityModalText& modal_text);

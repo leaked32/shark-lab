@@ -9,8 +9,15 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include <boost/json/object.hpp>
 #include <sqlite3.h>
@@ -84,6 +91,9 @@ struct config
 class db
 {
   public:
+	using peer_list = std::vector<peer>;
+	using peer_snapshot = std::shared_ptr<const peer_list>;
+
 	db(std::string_view path);
 	~db();
 	void init();
@@ -92,7 +102,7 @@ class db
 	void update_peer(uint32_t id, const std::string& name, const std::string& card);
 	void remove_peer(uint32_t peer_id);
 	std::optional<peer> get_peer_by_id(uint32_t peer_id);
-	std::vector<peer> get_all_peers();
+	peer_snapshot get_all_peers();
 
 	uint32_t insert_message(uint32_t sender_id, uint32_t reader_id, const std::string& content);
 	void remove_last_message(uint32_t peer_id, uint32_t self_id);
@@ -104,8 +114,12 @@ class db
 	void update_lorebook_entry(int id, const std::string& keyword, const std::string& content);
 
   private:
+	peer_snapshot load_peers_locked();
+	void invalidate_peers_locked();
+
 	sqlite3* db_ = nullptr;
 	std::mutex mutex_;
+	peer_snapshot peers_cache_;
 };
 
 struct dynamic_to_render

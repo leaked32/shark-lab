@@ -3,8 +3,8 @@
 	"server_address": "127.0.0.1",
 	"server_port": 37201,
 	
-	"font": "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
-	"background": "chatty_background.png",
+	"font": "Liberation Serif",
+	"background": "147469274_p0_2560.jpg",
 	"dark_mode": false,
 
 	"theme1": {
@@ -17,8 +17,9 @@
 	},
 	
 	
+	
 	"theme": {
-		"window_bg": [0.98, 0.90, 0.94, 0.96],
+		"window_bg": [0.98, 0.90, 0.94, 0.76],
 		"frame_bg": [0.94, 0.82, 0.89, 0.92],
 
 		"button": [0.85, 0.55, 0.72, 1.0],

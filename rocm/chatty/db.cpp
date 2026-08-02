@@ -9,6 +9,7 @@
 
 #include "db.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <mutex>
@@ -127,7 +128,8 @@ chatty::db::db(
 	std::string_view path)
 {
 	this->db_ = nullptr;
-	int rc = sqlite3_open(path.data(), &db_);
+	const std::string path_string(path);
+	int rc = sqlite3_open(path_string.c_str(), &db_);
 	if (rc) {
 		shark::raise("Failed to open sqlite database: {} for {}", path, sqlite3_errmsg(db_));
 	}
@@ -176,8 +178,14 @@ void chatty::db::update_peer(
 	sqlite3_bind_text(stmt, 2, card.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 3, id);
 
-	sqlite3_step(stmt);
+	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
+
+	if (rc != SQLITE_DONE) {
+		shark::raise("Update peer failed: {}", sqlite3_errmsg(db_));
+	}
+
+	invalidate_peers_locked();
 }
 
 uint32_t chatty::db::insert_peer(
@@ -205,7 +213,9 @@ uint32_t chatty::db::insert_peer(
 		shark::raise("Insert peer failed: {}", sqlite3_errmsg(db_));
 	}
 
-	return static_cast<uint32_t>(sqlite3_last_insert_rowid(db_));
+	const auto id = static_cast<uint32_t>(sqlite3_last_insert_rowid(db_));
+	invalidate_peers_locked();
+	return id;
 }
 
 uint32_t chatty::db::insert_message(
@@ -239,12 +249,13 @@ uint32_t chatty::db::insert_message(
 	return last_id;
 }
 
-// ====================== QUERY ALL PEERS ======================
-std::vector<chatty::peer> chatty::db::get_all_peers()
+chatty::db::peer_snapshot chatty::db::load_peers_locked()
 {
-	std::scoped_lock lock(mutex_);
+	if (peers_cache_) {
+		return peers_cache_;
+	}
 
-	std::vector<peer> peers;
+	auto peers = std::make_shared<peer_list>();
 
 	const char* sql = "SELECT id, name, card FROM peer ORDER BY id";
 
@@ -261,11 +272,29 @@ std::vector<chatty::peer> chatty::db::get_all_peers()
 		const unsigned char* card = sqlite3_column_text(stmt, 2);
 		p.name = name ? reinterpret_cast<const char*>(name) : "";
 		p.card = card ? reinterpret_cast<const char*>(card) : "";
-		peers.push_back(std::move(p));
+		peers->push_back(std::move(p));
+	}
+
+	if (rc != SQLITE_DONE) {
+		const std::string error = sqlite3_errmsg(db_);
+		sqlite3_finalize(stmt);
+		shark::raise("Read peers failed: {}", error);
 	}
 
 	sqlite3_finalize(stmt);
-	return peers;
+	peers_cache_ = std::move(peers);
+	return peers_cache_;
+}
+
+void chatty::db::invalidate_peers_locked()
+{
+	peers_cache_.reset();
+}
+
+chatty::db::peer_snapshot chatty::db::get_all_peers()
+{
+	std::scoped_lock lock(mutex_);
+	return load_peers_locked();
 }
 
 std::vector<chatty::message> chatty::db::get_messages_for_peer(
@@ -325,8 +354,14 @@ void chatty::db::remove_peer(
 	}
 	sqlite3_bind_int(stmt, 1, peer_id);
 
-	sqlite3_step(stmt);
+	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
+
+	if (rc != SQLITE_DONE) {
+		shark::raise("Remove peer failed: {}", sqlite3_errmsg(db_));
+	}
+
+	invalidate_peers_locked();
 }
 
 void chatty::db::remove_last_message(
@@ -365,31 +400,9 @@ void chatty::db::remove_last_message(
 std::optional<chatty::peer> chatty::db::get_peer_by_id(
 	uint32_t peer_id)
 {
-	std::scoped_lock lock(mutex_);
-
-	const char* sql = "SELECT id, name, card FROM peer WHERE id = ? LIMIT 1";
-
-	sqlite3_stmt* stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		return std::nullopt;
-	}
-
-	sqlite3_bind_int(stmt, 1, peer_id);
-
-	std::optional<peer> result = std::nullopt;
-
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		peer p;
-		p.id = static_cast<uint32_t>(sqlite3_column_int(stmt, 0));
-		const unsigned char* name = sqlite3_column_text(stmt, 1);
-		const unsigned char* card = sqlite3_column_text(stmt, 2);
-		p.name = name ? reinterpret_cast<const char*>(name) : "";
-		p.card = card ? reinterpret_cast<const char*>(card) : "";
-		result = p;
-	}
-
-	sqlite3_finalize(stmt);
-	return result;
+	const auto peers = get_all_peers();
+	const auto it = std::ranges::find(*peers, peer_id, &peer::id);
+	return it == peers->end() ? std::nullopt : std::optional<peer>{*it};
 }
 
 std::vector<chatty::lore_row> chatty::db::get_lorebook_for_peer(

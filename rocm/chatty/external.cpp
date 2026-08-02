@@ -19,6 +19,7 @@
 #include <boost/json/array.hpp>
 #include <boost/json/object.hpp>
 #include <boost/json/parse.hpp>
+#include <deque>
 
 namespace json = boost::json;
 

@@ -10,6 +10,7 @@
 #include "app.hpp"
 
 #include "imgui.h"
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -29,12 +30,12 @@ struct lore_entry_ui
 static std::vector<lore_entry_ui> lore_entries;
 
 void RenderLorebookWindow(
-	std::unique_ptr<chatty::db>& uni_db, std::optional<chatty::peer> selected_peer_info)
+	ApplicationState& app_state, uint32_t selected_peer_id)
 {
 	if (!show_lorebook_window)
 		return;
 
-	if (!selected_peer_info.has_value()) {
+	if (!app_state.uni_db_->get_peer_by_id(selected_peer_id).has_value()) {
 		ImGui::OpenPopup("Lorebook");
 		if (ImGui::BeginPopupModal("Lorebook", &show_lorebook_window)) {
 			ImGui::Text("No peer selected.");
@@ -55,7 +56,7 @@ void RenderLorebookWindow(
 	// Load current lore entries
 	// -----------------------------
 	lore_entries.clear();
-	auto rows = uni_db->get_lorebook_for_peer(selected_peer_info.value().id);
+	auto rows = app_state.uni_db_->get_lorebook_for_peer(selected_peer_id);
 
 	for (auto& r : rows)
 		lore_entries.push_back({(int)r.id, r.keyword, r.content});
@@ -88,25 +89,24 @@ void RenderLorebookWindow(
 	ImGui::Text("Keyword:");
 	ImGui::InputText("##keyword", lore_keyword, sizeof(lore_keyword));
 
-
 	ImGui::Text("Content:");
 
 	ImVec2 avail = ImGui::GetContentRegionAvail();
 
 	float button_height = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
 
-	ImGui::InputTextMultiline(
-		"##content", lore_content, sizeof(lore_content), ImVec2(avail.x, avail.y - button_height));
+	ImGui::InputTextMultiline("##content", lore_content, sizeof(lore_content),
+							  ImVec2(avail.x, avail.y - button_height));
 
 	// ImGui::Spacing();
 
 	if (ImGui::Button("Add / Update")) {
 		if (selected_lore_index >= 0) {
-			uni_db->update_lorebook_entry(
-				lore_entries[selected_lore_index].id, lore_keyword, lore_content);
+			app_state.uni_db_->update_lorebook_entry(lore_entries[selected_lore_index].id,
+													 lore_keyword, lore_content);
 		}
 		else {
-			uni_db->insert_lorebook(selected_peer_info.value().id, lore_keyword, lore_content);
+			app_state.uni_db_->insert_lorebook(selected_peer_id, lore_keyword, lore_content);
 		}
 
 		lore_keyword[0] = 0;
@@ -117,7 +117,7 @@ void RenderLorebookWindow(
 	ImGui::SameLine();
 
 	if (ImGui::Button("Delete") && selected_lore_index >= 0) {
-		uni_db->delete_lorebook_entry(lore_entries[selected_lore_index].id);
+		app_state.uni_db_->delete_lorebook_entry(lore_entries[selected_lore_index].id);
 
 		selected_lore_index = -1;
 		lore_keyword[0] = 0;
@@ -192,8 +192,7 @@ void RenderPeerEditorWindow(
 	);
 	*/
 
-	if (ImGui::Begin("Peer Editor",
-					 &peer_state.open,
+	if (ImGui::Begin("Peer Editor", &peer_state.open,
 					 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
 						 ImGuiWindowFlags_NoCollapse))
 	{
@@ -205,9 +204,7 @@ void RenderPeerEditorWindow(
 
 		float reserved = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y * 1;
 		// Scrollable log
-		ImGui::InputTextMultiline("##card",
-								  peer_state.card,
-								  sizeof(peer_state.card),
+		ImGui::InputTextMultiline("##card", peer_state.card, sizeof(peer_state.card),
 								  ImVec2(-1, -reserved),
 								  ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap);
 
@@ -223,8 +220,6 @@ void RenderPeerEditorWindow(
 				else {
 					app_state.uni_db_->update_peer(peer_state.selected_peer_id_, name, card);
 				}
-
-				app_state.peers_ = app_state.uni_db_->get_all_peers();
 
 				peer_state.name[0] = 0;
 				peer_state.card[0] = 0;
