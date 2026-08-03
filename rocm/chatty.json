@@ -4,7 +4,7 @@
 	"server_port": 37201,
 	
 	"font": "Liberation Serif",
-	"background": "chatty_background.jpg",
+	"background": "chatty_background.png",
 	"dark_mode": false,
 
 	"theme1": {

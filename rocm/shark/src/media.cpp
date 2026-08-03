@@ -1,19 +1,19 @@
 #include "shark/media.hpp"
 
+#include <array>
 #include <cstdio>
 #include <jpeglib.h>
 #include <png.h>
 #include <vector>
-#include <array>
 
 std::optional<shark::media::texture> shark::media::load_png_texture(
 	const std::filesystem::path& path)
 {
 	FILE* fp = fopen(path.c_str(), "rb");
 
-	if (!fp)
+	if (!fp) {
 		return std::nullopt;
-
+	}
 	png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
 
 	if (!png) {
@@ -49,19 +49,18 @@ std::optional<shark::media::texture> shark::media::load_png_texture(
 
 	auto bit_depth = png_get_bit_depth(png, info);
 
-	if (bit_depth == 16)
+	if (bit_depth == 16) {
 		png_set_strip_16(png);
-
-	if (color == PNG_COLOR_TYPE_PALETTE)
+	}
+	if (color == PNG_COLOR_TYPE_PALETTE) {
 		png_set_palette_to_rgb(png);
-
-	if (color == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
+	}
+	if (color == PNG_COLOR_TYPE_GRAY && bit_depth < 8) {
 		png_set_expand_gray_1_2_4_to_8(png);
-
+	}
 	if (png_get_valid(png, info, PNG_INFO_tRNS)) {
 		png_set_tRNS_to_alpha(png);
 	}
-
 	if (color == PNG_COLOR_TYPE_RGB || color == PNG_COLOR_TYPE_GRAY) {
 		png_set_filler(png, 0xFF, PNG_FILLER_AFTER);
 	}
@@ -82,29 +81,18 @@ std::optional<shark::media::texture> shark::media::load_png_texture(
 
 	png_destroy_read_struct(&png, &info, nullptr);
 
-	GLuint texture;
-
-	glGenTextures(1, &texture);
-
-	glBindTexture(GL_TEXTURE_2D, texture);
-
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-				 pixels.data());
-
 	shark::media::texture result;
 
 	result.width = width;
 	result.height = height;
 
 	glGenTextures(1, &result.id);
-
 	glBindTexture(GL_TEXTURE_2D, result.id);
-
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE,
+	
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
 				 pixels.data());
 
 	return result;
@@ -156,16 +144,6 @@ std::optional<shark::media::texture> shark::media::load_jpeg_texture(
 
 	fclose(fp);
 
-	GLuint texture;
-
-	glGenTextures(1, &texture);
-	glBindTexture(GL_TEXTURE_2D, texture);
-
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE,
-				 pixels.data());
-
 	shark::media::texture result;
 
 	result.width = width;
@@ -174,6 +152,9 @@ std::optional<shark::media::texture> shark::media::load_jpeg_texture(
 	glGenTextures(1, &result.id);
 
 	glBindTexture(GL_TEXTURE_2D, result.id);
+	
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE,
 				 pixels.data());
