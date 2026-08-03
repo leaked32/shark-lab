@@ -452,7 +452,7 @@ int main(
 	}
 
 	const char* glsl_version = "#version 130";
-	GLFWwindow* window = glfwCreateWindow(1280, 720, "ImGui Example", NULL, NULL);
+	GLFWwindow* window = glfwCreateWindow(1280, 720, "chatty", NULL, NULL);
 	glfwMakeContextCurrent(window);
 	glfwSwapInterval(1); // vsync
 

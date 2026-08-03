@@ -157,6 +157,7 @@ services.
 <img width="1915" height="1115" alt="chatty-demo-2" src="https://github.com/user-attachments/assets/6a511d31-0a36-41a3-9688-f4e3362633dc" />
 <img width="1911" height="1116" alt="chatty-demo-3" src="https://github.com/user-attachments/assets/dd73cd54-bd5c-4198-94da-1432de48abf9" />
 
+(mradermacher/MN-Crimson-Cafe-12B-i1-GGUF, EldritchLabs/MN-Crimson-Cafe-12B)
 
 ## Build
 
