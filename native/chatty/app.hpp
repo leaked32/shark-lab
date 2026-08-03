@@ -16,14 +16,28 @@
 #include <string>
 #include <vector>
 
+namespace chatty
+{
+
 enum class Activitie { INVALID, LOGIN, CHAT, PEER_EDITOR, LOREBOOK, MODAL_TEXT };
+
+struct dynamic_to_render
+{
+	// std::mutex tmp_mtx_stream;
+	std::string tmp_stream;
+	enum class status { STREAMING, INTERRUPTED, COMPLETED };
+	// std::atomic_bool failed = false;
+	dynamic_to_render() {};
+	std::optional<std::function<void(const std::string& reply)>> on_completed = std::nullopt;
+	status status_ = status::STREAMING;
+};
 
 struct message_to_render
 {
 	uint32_t sender_id;
 	uint32_t reader_id;
 	std::string content;
-	std::shared_ptr<chatty::dynamic_to_render> tmp_stream = nullptr;
+	std::shared_ptr<shark::synchronized<dynamic_to_render>> tmp_stream = nullptr;
 };
 
 struct ActivityState
@@ -100,7 +114,8 @@ struct ApplicationState
 	{
 		return shutting_down_;
 	}
-	void modal_text(const std::string& text, const std::string& title = "Modal Text")
+	void modal_text(
+		const std::string& text, const std::string& title = "Modal Text")
 	{
 		ActivityModalText modal{text, title};
 		this->states_.emplace_back(std::make_unique<ActivityModalText>(std::move(modal)));
@@ -115,3 +130,5 @@ void RenderPeerEditorWindow(ApplicationState& app_state, ActivityPeerEditor& pee
 void RenderLorebookWindow(ApplicationState& app_state, uint32_t selected_peer_id);
 
 void RenderModalText(ApplicationState& app_state, ActivityModalText& modal_text);
+
+} // namespace chatty

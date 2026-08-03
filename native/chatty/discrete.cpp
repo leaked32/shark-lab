@@ -29,7 +29,7 @@ struct lore_entry_ui
 
 static std::vector<lore_entry_ui> lore_entries;
 
-void RenderLorebookWindow(
+void chatty::RenderLorebookWindow(
 	ApplicationState& app_state, uint32_t selected_peer_id)
 {
 	if (!show_lorebook_window)
@@ -128,7 +128,7 @@ void RenderLorebookWindow(
 	ImGui::EndPopup();
 }
 
-void RenderModalText(
+void chatty::RenderModalText(
 	ApplicationState& app_state, ActivityModalText& modal_text)
 {
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -170,7 +170,7 @@ void RenderModalText(
 	}
 }
 
-void RenderPeerEditorWindow(
+void chatty::RenderPeerEditorWindow(
 	ApplicationState& app_state, ActivityPeerEditor& peer_state)
 {
 	if (!peer_state.open)

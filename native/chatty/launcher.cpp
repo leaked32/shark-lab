@@ -25,6 +25,8 @@
 #include "app.hpp"
 #include "external.hpp"
 
+using namespace chatty;
+
 void RenderLoginPanel(
 	ApplicationState& app_state, ActivityState& act_state)
 {
@@ -224,8 +226,8 @@ void RenderChatPanel(
 			ImGui::PushTextWrapPos();
 
 			if (msg.tmp_stream != nullptr) {
-				std::scoped_lock lock(msg.tmp_stream->tmp_mtx_stream);
-				const std::string& streamed_text = msg.tmp_stream->tmp_stream;
+				// std::scoped_lock lock(msg.tmp_stream->tmp_mtx_stream);
+				const std::string& streamed_text = msg.tmp_stream->lock()->tmp_stream;
 				ImGui::TextUnformatted(streamed_text.c_str());
 
 				if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -259,10 +261,13 @@ void RenderChatPanel(
 		std::erase_if(messages,
 					  [](const message_to_render& message)
 					  {
-						  return message.tmp_stream != nullptr &&
-							  message.tmp_stream->status ==
-							  chatty::dynamic_to_render::status::INTERRUPTED;
-						  ;
+						  if (message.tmp_stream != nullptr) {
+							auto guarded_stream = message.tmp_stream->lock();
+							return guarded_stream->status_ ==
+								chatty::dynamic_to_render::status::INTERRUPTED;
+							;
+						  }
+						  return false;
 					  });
 	};
 	remove_failed_streams();
@@ -287,18 +292,24 @@ void RenderChatPanel(
 
 		auto signal = [&]
 		{
-			auto tmp_stream = std::make_shared<chatty::dynamic_to_render>();
-			tmp_stream->on_completed = [selected_peer_id, &app_state](const std::string& reply)
+			std::shared_ptr<shark::synchronized<chatty::dynamic_to_render>> tmp_stream =
+				std::make_shared<shark::synchronized<chatty::dynamic_to_render>>();
+			// auto guarded_stream = tmp_stream->lock();
+
+			tmp_stream->lock()->on_completed =
+				[selected_peer_id, &app_state](const std::string& reply)
 			{ app_state.uni_db_->insert_message(selected_peer_id, app_state.self_id_, reply); };
 
 			shark::log::debug("Starting Thread to call send_message_llama");
 			app_state.multi_executor_->push(
 				[selected_peer_id, tmp_stream, &app_state]()
 				{
+					// auto guarded_stream = tmp_stream->lock();
 					auto payload =
 						chatty::prepare_payload(app_state, selected_peer_id, app_state.self_id_);
 					if (!payload.has_value()) {
-						tmp_stream->status = chatty::dynamic_to_render::status::INTERRUPTED;
+						tmp_stream->lock()->status_ =
+							chatty::dynamic_to_render::status::INTERRUPTED;
 						return;
 					}
 
@@ -327,10 +338,11 @@ void RenderChatPanel(
 				if (it->tmp_stream == nullptr) {
 					continue;
 				}
-
-				std::scoped_lock lock(it->tmp_stream->tmp_mtx_stream);
-				if (it->tmp_stream->status == chatty::dynamic_to_render::status::STREAMING) {
-					it->tmp_stream->status = chatty::dynamic_to_render::status::INTERRUPTED;
+				
+				auto guarded_stream = it->tmp_stream->lock();
+				// Use `Remove Last Message` if it's already done.
+				if (guarded_stream->status_ == chatty::dynamic_to_render::status::STREAMING) {
+					guarded_stream->status_ = chatty::dynamic_to_render::status::INTERRUPTED;
 					// it->tmp_stream->failed = true;
 					state.selected_peer_messages.erase(it);
 					break;

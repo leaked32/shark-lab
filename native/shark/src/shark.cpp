@@ -12,13 +12,13 @@
 
 #include "shark/shark.hpp"
 
-void shark::forcely_print_vector(
+void shark::forcibly_print_vector(
 	const std::vector<std::string>& input)
 {
 	// std::cout << "\tdebug forcely_print_vector: ";
 	for (size_t i = 0; i < input.size(); ++i) {
 		// std::cout << i << ":";
-		forcely_print_string(input.at(i));
+		forcibly_print_string(input.at(i));
 		std::cout << ", ";
 	}
 	// std::cout << std::endl;
@@ -148,7 +148,7 @@ std::string shark::indent(
 	return result;
 }
 
-void shark::forcely_print_string(
+void shark::forcibly_print_string(
 	const std::string& input)
 {
 	// std::cout << "";

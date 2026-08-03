@@ -122,16 +122,6 @@ class db
 	peer_snapshot peers_cache_;
 };
 
-struct dynamic_to_render
-{
-	std::mutex tmp_mtx_stream;
-	std::string tmp_stream;
-	enum class status { STREAMING, INTERRUPTED, COMPLETED };
-	std::atomic<status> status = status::STREAMING;
-	std::optional<std::function<void(const std::string& reply)>> on_completed = std::nullopt;
-	// std::atomic_bool failed = false;
-	dynamic_to_render() {};
-};
 
 // namespace ends
 } // namespace chatty

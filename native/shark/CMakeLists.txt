@@ -1,5 +1,7 @@
 project(shark CXX)
 
+find_package(Boost REQUIRED COMPONENTS json)
+find_package(OpenGL REQUIRED)
 find_package(JPEG REQUIRED)
 find_package(PNG REQUIRED)
 find_library(OPUSENC_LIBRARY NAMES opusenc REQUIRED)
@@ -18,7 +20,9 @@ target_include_directories(shark
 )
 
 target_link_libraries(shark PRIVATE
+	Boost::headers Boost::json
 	JPEG::JPEG PNG::PNG
+	glfw OpenGL::GL
 		${OPUSFILE_LIBRARY}
 		${OPUSENC_LIBRARY}
 )

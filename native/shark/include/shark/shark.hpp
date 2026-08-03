@@ -328,8 +328,8 @@ struct profiler
 	std::vector<duration> laps;
 };
 
-void forcely_print_string(const std::string& input);
-void forcely_print_vector(const std::vector<std::string>& input);
+void forcibly_print_string(const std::string& input);
+void forcibly_print_vector(const std::vector<std::string>& input);
 
 namespace file
 {
@@ -447,6 +447,93 @@ std::tuple<T, T> from_interval_text(
 	std::string intr = str::replace(interval, " ", "");
 }
 } // namespace math
+
+template <typename T>
+struct synchronized
+{
+	template <typename... Types>
+	synchronized(
+		Types&&... values)
+		requires std::constructible_from<T, Types...>
+		: data_(std::forward<Types>(values)...)
+	{}
+
+	synchronized() : data_() {}
+
+	synchronized(synchronized&& other)
+	noexcept(std::is_nothrow_move_constructible_v<T>)
+	: data_([&other]() -> T {
+		std::scoped_lock lock(other.mtx_);
+		return std::move(other.data_);
+	}())
+	{}
+
+	synchronized& operator=(synchronized&& other)
+	noexcept(std::is_nothrow_move_assignable_v<T>)
+	{
+		if (this != &other) {
+			data_ = std::move(other.data_);
+		}
+		return *this;
+	}
+
+	synchronized(const synchronized&) = delete;
+	synchronized& operator=(const synchronized&) = delete;
+
+	struct guard
+	{
+		std::unique_lock<std::mutex> lock_;
+		T* data_;
+
+		guard(
+			std::mutex& mtx, T* data) : lock_(mtx), data_(data)
+		{}
+
+		T* operator->()
+		{
+			return data_;
+		}
+
+		T& operator*()
+		{
+			return *data_;
+		}
+	};
+
+	struct const_guard
+	{
+		std::unique_lock<std::mutex> lock_;
+		const T* data_;
+
+		const_guard(
+			std::mutex& mtx, const T* data) : lock_(mtx), data_(data)
+		{}
+
+		const T* operator->() const
+		{
+			return data_;
+		}
+
+		const T& operator*() const
+		{
+			return *data_;
+		}
+	};
+
+	guard lock()
+	{
+		return guard(mtx_, &data_);
+	}
+
+	const_guard lock() const
+	{
+		return const_guard(mtx_, &data_);
+	}
+
+  private:
+	std::mutex mtx_;
+	T data_;
+};
 
 namespace async
 {

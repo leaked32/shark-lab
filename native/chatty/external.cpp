@@ -141,7 +141,7 @@ std::optional<boost::json::object> chatty::prepare_payload(
 
 void chatty::send_message_llama(
 	ApplicationState& app_state, const boost::json::object& payload,
-	std::shared_ptr<chatty::dynamic_to_render> tmp_stream)
+	std::shared_ptr<shark::synchronized<dynamic_to_render>> tmp_stream)
 {
 	// auto payload = this->prepare_payload(peer_id, self_id);
 	using namespace chatty;
@@ -189,7 +189,7 @@ void chatty::send_message_llama(
 		std::string pending;
 
 		while ((!app_state.shutting_down()) &&
-			   tmp_stream->status == dynamic_to_render::status::STREAMING)
+			   tmp_stream->lock()->status_ == dynamic_to_render::status::STREAMING)
 		{
 			beast::error_code ec;
 
@@ -242,14 +242,15 @@ void chatty::send_message_llama(
 					full_reply += token;
 
 					if (tmp_stream) {
-						std::scoped_lock _(tmp_stream->tmp_mtx_stream);
-						if (tmp_stream->status == dynamic_to_render::status::INTERRUPTED) {
+						auto guarded_stream = tmp_stream->lock();
+						//std::scoped_lock _(tmp_stream->tmp_mtx_stream);
+						if (guarded_stream->status_ == dynamic_to_render::status::INTERRUPTED) {
 							stream.socket().shutdown(tcp::socket::shutdown_both);
 							stream.socket().close();
 
 							return;
 						}
-						tmp_stream->tmp_stream += token;
+						guarded_stream->tmp_stream += token;
 					}
 				} catch (const std::exception& e) {
 					shark::log::debug("JSON parse failed: {}", e.what());
@@ -262,16 +263,19 @@ void chatty::send_message_llama(
 	done:
 		stream.socket().shutdown(tcp::socket::shutdown_both);
 		stream.socket().close();
-
-		if (tmp_stream->status == dynamic_to_render::status::STREAMING) {
-			if (tmp_stream->on_completed.has_value()) {
-				tmp_stream->on_completed.value()(full_reply);
+		
+		auto guarded_stream = tmp_stream->lock();
+		if (guarded_stream->status_ == dynamic_to_render::status::STREAMING) {
+			if (guarded_stream->on_completed.has_value()) {
+				guarded_stream->on_completed.value()(full_reply);
 			}
 			// this->insert_message(peer_id, self_id, full_reply);
-			tmp_stream->status = dynamic_to_render::status::COMPLETED;
+			guarded_stream->status_ = dynamic_to_render::status::COMPLETED;
 		}
+		return;
 	} catch (const std::exception& e) {
-		tmp_stream->status = dynamic_to_render::status::INTERRUPTED;
+		auto guarded_stream = tmp_stream->lock();
+		guarded_stream->status_ = dynamic_to_render::status::INTERRUPTED;
 		app_state.modal_text(std::format("chatty::send_message_llama: {}", e.what()), "Error");
 		shark::log::exception("chatty::send_message_llama: {}", e.what());
 		return;
