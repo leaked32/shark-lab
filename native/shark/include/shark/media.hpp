@@ -1,4 +1,17 @@
+/*
+ * Project: shark-lab
+ * Repository: https://github.com/leaked32/shark-lab
+ *
+ * File: shark/include/shark/media.hpp
+ *
+ * License: MIT
+ */
+
 #pragma once
+
+#ifndef __cplusplus
+#error "This header requires C++"
+#endif
 
 #include <GL/gl.h>
 #include <filesystem>

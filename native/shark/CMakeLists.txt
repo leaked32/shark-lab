@@ -13,13 +13,13 @@ add_library(shark STATIC
 	src/media.cpp
 )
 
-target_include_directories(shark
+target_include_directories(${PROJECT_NAME}
 	PUBLIC
 		${CMAKE_CURRENT_SOURCE_DIR}/include
 		${OPUS_INCLUDE_DIR}
 )
 
-target_link_libraries(shark PRIVATE
+target_link_libraries(${PROJECT_NAME} PRIVATE
 	Boost::headers Boost::json
 	JPEG::JPEG PNG::PNG
 	glfw OpenGL::GL
@@ -27,4 +27,4 @@ target_link_libraries(shark PRIVATE
 		${OPUSENC_LIBRARY}
 )
 
-target_compile_options(shark PRIVATE -O2)
+target_compile_options(${PROJECT_NAME} PRIVATE -O2)

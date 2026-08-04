@@ -2,7 +2,7 @@
  * Project: shark-lab
  * Repository: https://github.com/leaked32/shark-lab
  *
- * File: shark/include/shark/common.h
+ * File: shark/include/shark/common.hpp
  *
  * License: MIT
  */
