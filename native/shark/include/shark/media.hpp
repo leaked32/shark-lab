@@ -101,7 +101,8 @@ class opus_reader
 class opus_writer
 {
   public:
-	opus_writer(const std::filesystem::path& path, const decoded_pcm& format);
+	opus_writer(const std::filesystem::path& path, const decoded_pcm& format,
+				std::size_t bitrate = 192000);
 	~opus_writer();
 	opus_writer(const opus_writer&) = delete;
 	opus_writer& operator=(const opus_writer&) = delete;

@@ -988,11 +988,14 @@ struct shark::media::opus_writer::state
 };
 
 shark::media::opus_writer::opus_writer(
-	const std::filesystem::path& path, const decoded_pcm& format) :
+	const std::filesystem::path& path, const decoded_pcm& format, std::size_t bitrate) :
 	state_(std::make_unique<state>())
 {
 	if (format.sample_rate == 0 || format.channels == 0) {
 		throw std::runtime_error("cannot create Opus writer without an audio format");
+	}
+	if (bitrate < 6000 || bitrate > 512000) {
+		throw std::invalid_argument("Opus bitrate must be between 6000 and 512000 bps");
 	}
 	state_->comments = ope_comments_create();
 	state_->encoder = ope_encoder_create_file(path.c_str(), state_->comments, format.sample_rate,
@@ -1001,6 +1004,11 @@ shark::media::opus_writer::opus_writer(
 		ope_comments_destroy(state_->comments);
 		state_->comments = nullptr;
 		throw std::runtime_error("cannot create opus: " + path.string());
+	}
+	if (ope_encoder_ctl(state_->encoder, OPUS_SET_BITRATE(static_cast<int>(bitrate))) != OPE_OK) {
+		ope_encoder_destroy(state_->encoder);
+		state_->encoder = nullptr;
+		throw std::runtime_error("cannot set Opus bitrate");
 	}
 	state_->sample_rate = format.sample_rate;
 	state_->channels = format.channels;
