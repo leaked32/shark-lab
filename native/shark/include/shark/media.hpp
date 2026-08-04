@@ -114,6 +114,40 @@ class opus_writer
 	std::unique_ptr<state> state_;
 };
 
+// Sequential WAV I/O. These keep only the caller's current block in memory.
+class wav_reader
+{
+  public:
+	explicit wav_reader(const std::filesystem::path& path);
+	~wav_reader();
+	wav_reader(const wav_reader&) = delete;
+	wav_reader& operator=(const wav_reader&) = delete;
+
+	[[nodiscard]] const decoded_pcm& format() const;
+	[[nodiscard]] std::size_t total_frames() const;
+	[[nodiscard]] decoded_pcm read_frames(std::size_t maximum_frames);
+
+  private:
+	struct state;
+	std::unique_ptr<state> state_;
+};
+
+class wav_writer
+{
+  public:
+	wav_writer(const std::filesystem::path& path, const decoded_pcm& format);
+	~wav_writer();
+	wav_writer(const wav_writer&) = delete;
+	wav_writer& operator=(const wav_writer&) = delete;
+
+	void write_frames(const decoded_pcm& audio);
+	void finish();
+
+  private:
+	struct state;
+	std::unique_ptr<state> state_;
+};
+
 decoded_pcm read_audio(const std::filesystem::path& path);
 void write_audio(const std::filesystem::path& path, const decoded_pcm& audio);
 

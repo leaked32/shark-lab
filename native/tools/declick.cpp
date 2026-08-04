@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -54,7 +55,7 @@ void usage(
 		"  --lpc-context-ms X         context used on each side\n"
 		"  --lpc-mix X                LPC share in hybrid mode, 0..1\n"
 		"  --report FILE.csv          write detected-event diagnostics\n"
-		"  --chunk-seconds X          Opus core block duration, default 120\n"
+		"  --chunk-seconds X          streamed core block duration, default 120\n"
 		"  --threads N                channel worker threads; 0 = auto (default)\n"
 		"  --dry-run                  detect/report without writing output\n"
 		"  -h, --help                 show this message\n";
@@ -231,6 +232,15 @@ bool is_opus(
 	return extension == ".opus";
 }
 
+bool is_wav(
+	const std::filesystem::path& path)
+{
+	std::string extension = path.extension().string();
+	std::transform(extension.begin(), extension.end(), extension.begin(),
+				   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return extension == ".wav";
+}
+
 void append_frames(
 	lo::decoded_pcm& destination, const lo::decoded_pcm& source, std::size_t begin, std::size_t end)
 {
@@ -256,11 +266,12 @@ lo::decoded_pcm take_frames(
 	return result;
 }
 
-sd::Result process_streamed_opus(
+template <typename reader_type, typename writer_type>
+sd::Result process_streamed(
 	const options& options, sd::options& config, lo::decoded_pcm& format,
 	std::size_t& processed_frames)
 {
-	lo::opus_reader reader(options.input);
+	reader_type reader(options.input);
 	format = reader.format();
 	const std::size_t core_frames = std::max<std::size_t>(
 		1, static_cast<std::size_t>(options.chunk_seconds * format.sample_rate));
@@ -269,7 +280,7 @@ sd::Result process_streamed_opus(
 	const std::size_t total_frames = reader.total_frames();
 	lo::decoded_pcm history = format;
 	lo::decoded_pcm future = format;
-	std::optional<lo::opus_writer> writer;
+	std::optional<writer_type> writer;
 	if (!options.dry_run) {
 		writer.emplace(options.output, format);
 	}
@@ -370,8 +381,15 @@ int main(
 		sd::Result result;
 		std::size_t frame_count = 0;
 		const bool streamed_opus = is_opus(options.input);
+		const bool streamed_wav = is_wav(options.input);
+		const bool streamed = streamed_opus || streamed_wav;
 		if (streamed_opus) {
-			result = process_streamed_opus(options, config, audio, frame_count);
+			result = process_streamed<lo::opus_reader, lo::opus_writer>(
+				options, config, audio, frame_count);
+		}
+		else if (streamed_wav) {
+			result = process_streamed<lo::wav_reader, lo::wav_writer>(
+				options, config, audio, frame_count);
 		}
 		else {
 			audio = lo::read_audio(options.input);
@@ -385,8 +403,9 @@ int main(
 				  << "frames: " << frame_count << '\n'
 				  << "preset: " << options.preset << '\n'
 				  << "repair mode: " << sd::to_string(config.repair_mode) << '\n';
-		if (streamed_opus) {
-			std::cout << "Opus mode: streamed (" << options.chunk_seconds
+		if (streamed) {
+			std::cout << (streamed_opus ? "Opus" : "WAV") << " mode: streamed ("
+					  << options.chunk_seconds
 					  << " s core, 500 ms overlap, "
 					  << (options.threads == 0 ? "automatic" : std::to_string(options.threads))
 					  << " worker(s))\n";
@@ -408,7 +427,7 @@ int main(
 			write_report(options.report, audio, result);
 			std::cout << "report: " << options.report << '\n';
 		}
-		if (!options.dry_run && !streamed_opus) {
+		if (!options.dry_run && !streamed) {
 			lo::write_audio(options.output, audio);
 			std::cout << "output: " << options.output << '\n';
 		}

@@ -299,6 +299,352 @@ double finite_or_zero(
 
 } // namespace
 
+namespace
+{
+
+struct wav_layout
+{
+	shark::media::decoded_pcm format;
+	std::uint16_t block_align = 0;
+	std::size_t bytes_per_sample = 0;
+	std::size_t data_offset = 0;
+	std::size_t data_size = 0;
+};
+
+void read_exact(
+	std::istream& in, void* destination, std::size_t size, const std::string& message)
+{
+	in.read(static_cast<char*>(destination), static_cast<std::streamsize>(size));
+	if (in.gcount() != static_cast<std::streamsize>(size)) {
+		throw std::runtime_error(message);
+	}
+}
+
+wav_layout read_wav_layout(
+	std::istream& in, const std::filesystem::path& path)
+{
+	std::array<std::uint8_t, 12> header{};
+	read_exact(in, header.data(), header.size(), "truncated WAV header: " + path.string());
+	if (!id_is(header.data(), "RIFF") || !id_is(header.data() + 8, "WAVE")) {
+		throw std::runtime_error("only little-endian RIFF/WAVE files are supported");
+	}
+
+	bool have_fmt = false;
+	bool have_data = false;
+	std::uint16_t format_tag = 0;
+	std::uint16_t channels = 0;
+	std::uint32_t sample_rate = 0;
+	std::uint16_t block_align = 0;
+	std::uint16_t bits = 0;
+	std::uint16_t valid_bits = 0;
+	std::size_t data_offset = 0;
+	std::size_t data_size = 0;
+	while (in) {
+		std::array<std::uint8_t, 8> chunk{};
+		in.read(reinterpret_cast<char*>(chunk.data()), static_cast<std::streamsize>(chunk.size()));
+		if (in.eof() && in.gcount() == 0) {
+			break;
+		}
+		if (in.gcount() != static_cast<std::streamsize>(chunk.size())) {
+			throw std::runtime_error("truncated WAV chunk header");
+		}
+		const std::size_t chunk_size = u32(chunk.data() + 4);
+		const auto payload = in.tellg();
+		if (payload < 0) {
+			throw std::runtime_error("cannot determine WAV chunk position");
+		}
+		if (id_is(chunk.data(), "fmt ")) {
+			if (chunk_size < 16) {
+				throw std::runtime_error("invalid WAV fmt chunk");
+			}
+			std::vector<std::uint8_t> bytes(chunk_size);
+			read_exact(in, bytes.data(), bytes.size(), "truncated WAV fmt chunk");
+			format_tag = u16(bytes.data());
+			channels = u16(bytes.data() + 2);
+			sample_rate = u32(bytes.data() + 4);
+			block_align = u16(bytes.data() + 12);
+			bits = u16(bytes.data() + 14);
+			valid_bits = bits;
+			if (format_tag == 0xfffeU) {
+				if (chunk_size < 40) {
+					throw std::runtime_error("truncated WAVE_FORMAT_EXTENSIBLE fmt chunk");
+				}
+				valid_bits = u16(bytes.data() + 18);
+				format_tag = u16(bytes.data() + 24);
+			}
+			have_fmt = true;
+		}
+		else if (id_is(chunk.data(), "data")) {
+			data_offset = static_cast<std::size_t>(payload);
+			data_size = chunk_size;
+			in.seekg(static_cast<std::streamoff>(chunk_size), std::ios::cur);
+			have_data = true;
+		}
+		else {
+			in.seekg(static_cast<std::streamoff>(chunk_size), std::ios::cur);
+		}
+		if (chunk_size & 1U) {
+			in.seekg(1, std::ios::cur);
+		}
+	}
+	if (!have_fmt || !have_data || channels == 0 || sample_rate == 0 || block_align == 0 ||
+		bits == 0)
+	{
+		throw std::runtime_error("invalid WAV format or missing fmt/data chunk");
+	}
+	if (format_tag != 1U && format_tag != 3U) {
+		throw std::runtime_error("unsupported WAV encoding; expected PCM integer or IEEE float");
+	}
+	const std::size_t bytes_per_sample = (bits + 7U) / 8U;
+	if (bytes_per_sample == 0 || block_align < channels * bytes_per_sample ||
+		data_size % block_align != 0)
+	{
+		throw std::runtime_error("invalid WAV sample layout");
+	}
+	wav_layout result;
+	result.format.sample_rate = sample_rate;
+	result.format.channels = channels;
+	result.format.encoding = format_tag == 1U ? shark::media::sample_encoding::pcm_integer
+											  : shark::media::sample_encoding::ieee_float;
+	result.format.bits_per_sample = bits;
+	result.format.valid_bits_per_sample = valid_bits == 0 ? bits : valid_bits;
+	result.block_align = block_align;
+	result.bytes_per_sample = bytes_per_sample;
+	result.data_offset = data_offset;
+	result.data_size = data_size;
+	return result;
+}
+
+double decode_wav_sample(
+	const std::uint8_t* p, const wav_layout& layout)
+{
+	if (layout.format.encoding == shark::media::sample_encoding::pcm_integer) {
+		switch (layout.format.bits_per_sample) {
+		case 8:
+			return (static_cast<int>(p[0]) - 128) / 128.0;
+		case 16:
+			return static_cast<std::int16_t>(u16(p)) / 32768.0;
+		case 24:
+			return decode_s24(p) / 8388608.0;
+		case 32:
+			return static_cast<std::int32_t>(u32(p)) / 2147483648.0;
+		default:
+			throw std::runtime_error("unsupported integer PCM bit depth");
+		}
+	}
+	if (layout.format.bits_per_sample == 32) {
+		const std::uint32_t raw = u32(p);
+		float value = 0.0F;
+		std::memcpy(&value, &raw, sizeof(value));
+		return finite_or_zero(value);
+	}
+	if (layout.format.bits_per_sample == 64) {
+		const std::uint64_t raw = u64(p);
+		double value = 0.0;
+		std::memcpy(&value, &raw, sizeof(value));
+		return finite_or_zero(value);
+	}
+	throw std::runtime_error("unsupported IEEE-float bit depth");
+}
+
+void write_wav_sample(
+	std::ostream& out, double value, const shark::media::decoded_pcm& format)
+{
+	value = std::clamp(finite_or_zero(value), -1.0, 1.0);
+	if (format.encoding == shark::media::sample_encoding::pcm_integer) {
+		switch (format.bits_per_sample) {
+		case 8:
+			out.put(static_cast<char>(
+				std::clamp(static_cast<int>(std::lround(value * 128.0 + 128.0)), 0, 255)));
+			return;
+		case 16:
+			put_u16(out,
+					static_cast<std::uint16_t>(std::clamp(
+						static_cast<long long>(std::llround(value * 32768.0)), -32768LL, 32767LL)));
+			return;
+		case 24:
+			put_u24(out,
+					static_cast<std::int32_t>(
+						std::clamp(static_cast<long long>(std::llround(value * 8388608.0)),
+								   -8388608LL, 8388607LL)));
+			return;
+		case 32:
+			put_u32(out,
+					static_cast<std::uint32_t>(
+						std::clamp(static_cast<long long>(std::llround(value * 2147483648.0)),
+								   -2147483648LL, 2147483647LL)));
+			return;
+		default:
+			throw std::runtime_error("unsupported integer PCM bit depth");
+		}
+	}
+	if (format.bits_per_sample == 32) {
+		const float sample = static_cast<float>(value);
+		std::uint32_t raw = 0;
+		std::memcpy(&raw, &sample, sizeof(raw));
+		put_u32(out, raw);
+		return;
+	}
+	if (format.bits_per_sample == 64) {
+		std::uint64_t raw = 0;
+		std::memcpy(&raw, &value, sizeof(raw));
+		put_u64(out, raw);
+		return;
+	}
+	throw std::runtime_error("unsupported IEEE-float bit depth");
+}
+
+} // namespace
+
+struct shark::media::wav_reader::state
+{
+	std::ifstream input;
+	wav_layout layout;
+	std::size_t remaining_frames = 0;
+};
+
+shark::media::wav_reader::wav_reader(
+	const std::filesystem::path& path) : state_(std::make_unique<state>())
+{
+	state_->input.open(path, std::ios::binary);
+	if (!state_->input) {
+		throw std::runtime_error("cannot open input WAV: " + path.string());
+	}
+	state_->layout = read_wav_layout(state_->input, path);
+	state_->remaining_frames = state_->layout.data_size / state_->layout.block_align;
+	state_->input.clear();
+	state_->input.seekg(static_cast<std::streamoff>(state_->layout.data_offset));
+}
+
+shark::media::wav_reader::~wav_reader() = default;
+
+const shark::media::decoded_pcm& shark::media::wav_reader::format() const
+{
+	return state_->layout.format;
+}
+
+std::size_t shark::media::wav_reader::total_frames() const
+{
+	return state_->layout.data_size / state_->layout.block_align;
+}
+
+shark::media::decoded_pcm shark::media::wav_reader::read_frames(
+	std::size_t maximum_frames)
+{
+	const std::size_t frames = std::min(maximum_frames, state_->remaining_frames);
+	decoded_pcm result = format();
+	result.samples.resize(frames * result.channels);
+	std::vector<std::uint8_t> bytes(frames * state_->layout.block_align);
+	if (!bytes.empty()) {
+		read_exact(state_->input, bytes.data(), bytes.size(), "truncated WAV data chunk");
+	}
+	for (std::size_t frame = 0; frame < frames; ++frame) {
+		const auto* source = bytes.data() + frame * state_->layout.block_align;
+		for (std::uint16_t channel = 0; channel < result.channels; ++channel) {
+			result.sample(frame, channel) = decode_wav_sample(
+				source + channel * state_->layout.bytes_per_sample, state_->layout);
+		}
+	}
+	state_->remaining_frames -= frames;
+	return result;
+}
+
+struct shark::media::wav_writer::state
+{
+	std::ofstream output;
+	decoded_pcm format;
+	std::size_t bytes_per_sample = 0;
+	std::uint64_t data_size = 0;
+	bool finished = false;
+};
+
+shark::media::wav_writer::wav_writer(
+	const std::filesystem::path& path, const decoded_pcm& format) :
+	state_(std::make_unique<state>())
+{
+	if (format.channels == 0 || format.sample_rate == 0) {
+		throw std::runtime_error("cannot write WAV with zero channels or sample rate");
+	}
+	state_->format = format;
+	state_->format.samples.clear();
+	state_->bytes_per_sample = (format.bits_per_sample + 7U) / 8U;
+	if (state_->bytes_per_sample == 0 ||
+		(format.encoding == sample_encoding::pcm_integer && format.bits_per_sample != 8 &&
+		 format.bits_per_sample != 16 && format.bits_per_sample != 24 &&
+		 format.bits_per_sample != 32) ||
+		(format.encoding == sample_encoding::ieee_float && format.bits_per_sample != 32 &&
+		 format.bits_per_sample != 64))
+	{
+		throw std::runtime_error("unsupported WAV output format");
+	}
+	state_->output.open(path, std::ios::binary);
+	if (!state_->output) {
+		throw std::runtime_error("cannot open output WAV: " + path.string());
+	}
+	const std::uint16_t block_align =
+		static_cast<std::uint16_t>(format.channels * state_->bytes_per_sample);
+	const std::uint32_t byte_rate = format.sample_rate * block_align;
+	state_->output.write("RIFF", 4);
+	put_u32(state_->output, 0);
+	state_->output.write("WAVEfmt ", 8);
+	put_u32(state_->output, 16);
+	put_u16(state_->output, format.encoding == sample_encoding::pcm_integer ? 1U : 3U);
+	put_u16(state_->output, format.channels);
+	put_u32(state_->output, format.sample_rate);
+	put_u32(state_->output, byte_rate);
+	put_u16(state_->output, block_align);
+	put_u16(state_->output, format.bits_per_sample);
+	state_->output.write("data", 4);
+	put_u32(state_->output, 0);
+}
+
+shark::media::wav_writer::~wav_writer()
+{
+	try {
+		finish();
+	} catch (...) {
+	}
+}
+
+void shark::media::wav_writer::write_frames(
+	const decoded_pcm& audio)
+{
+	if (state_->finished || audio.sample_rate != state_->format.sample_rate ||
+		audio.channels != state_->format.channels)
+	{
+		throw std::runtime_error("incompatible streamed WAV block");
+	}
+	const std::uint64_t bytes = static_cast<std::uint64_t>(audio.frames()) *
+		state_->format.channels * state_->bytes_per_sample;
+	if (state_->data_size + bytes > std::numeric_limits<std::uint32_t>::max()) {
+		throw std::runtime_error("WAV output exceeds the RIFF 4 GiB limit");
+	}
+	for (double sample : audio.samples) {
+		write_wav_sample(state_->output, sample, state_->format);
+	}
+	if (!state_->output) {
+		throw std::runtime_error("failed to write WAV data");
+	}
+	state_->data_size += bytes;
+}
+
+void shark::media::wav_writer::finish()
+{
+	if (!state_ || state_->finished) {
+		return;
+	}
+	if (state_->data_size & 1U) {
+		state_->output.put('\0');
+	}
+	state_->output.seekp(4);
+	put_u32(state_->output,
+			static_cast<std::uint32_t>(36 + state_->data_size + (state_->data_size & 1U)));
+	state_->output.seekp(40);
+	put_u32(state_->output, static_cast<std::uint32_t>(state_->data_size));
+	state_->output.close();
+	state_->finished = true;
+}
+
 shark::media::decoded_pcm shark::media::read_wav(
 	const std::filesystem::path& path)
 {
