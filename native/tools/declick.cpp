@@ -25,6 +25,7 @@ struct options
 	std::filesystem::path report;
 	bool dry_run = false;
 	double chunk_seconds = 120.0;
+	std::size_t threads = 0;
 	std::vector<std::pair<std::string, std::string>> overrides;
 };
 
@@ -54,6 +55,7 @@ void usage(
 		"  --lpc-mix X                LPC share in hybrid mode, 0..1\n"
 		"  --report FILE.csv          write detected-event diagnostics\n"
 		"  --chunk-seconds X          Opus core block duration, default 120\n"
+		"  --threads N                channel worker threads; 0 = auto (default)\n"
 		"  --dry-run                  detect/report without writing output\n"
 		"  -h, --help                 show this message\n";
 	out << use;
@@ -109,6 +111,9 @@ options parse_options(
 			}
 			else if (arg == "--chunk-seconds") {
 				options.chunk_seconds = parse_double(arg, value);
+			}
+			else if (arg == "--threads") {
+				options.threads = parse_size(arg, value);
 			}
 			else {
 				options.overrides.emplace_back(arg, value);
@@ -252,15 +257,16 @@ lo::decoded_pcm take_frames(
 }
 
 sd::Result process_streamed_opus(
-	const options& options, const sd::options& config, lo::decoded_pcm& format,
+	const options& options, sd::options& config, lo::decoded_pcm& format,
 	std::size_t& processed_frames)
 {
 	lo::opus_reader reader(options.input);
 	format = reader.format();
 	const std::size_t core_frames = std::max<std::size_t>(
 		1, static_cast<std::size_t>(options.chunk_seconds * format.sample_rate));
-	// / 4: 250ms, / 2: 500ms
 	const std::size_t overlap_frames = std::max<std::size_t>(1, format.sample_rate / 2);
+	config.worker_threads = options.threads;
+	const std::size_t total_frames = reader.total_frames();
 	lo::decoded_pcm history = format;
 	lo::decoded_pcm future = format;
 	std::optional<lo::opus_writer> writer;
@@ -270,6 +276,18 @@ sd::Result process_streamed_opus(
 
 	sd::Result total;
 	std::size_t output_frames = 0;
+	std::size_t completed_chunks = 0;
+	auto show_progress = [&]
+	{
+		const double seconds = static_cast<double>(output_frames) / format.sample_rate;
+		std::cout << "\rprogress: " << std::fixed << std::setprecision(1) << seconds << " s";
+		if (total_frames != 0) {
+			std::cout << " / " << static_cast<double>(total_frames) / format.sample_rate << " s ("
+					  << std::setprecision(0) << 100.0 * output_frames / total_frames << "%)";
+		}
+		std::cout << ", chunk " << completed_chunks << std::flush;
+	};
+	show_progress();
 	while (true) {
 		while (future.frames() < core_frames) {
 			lo::decoded_pcm block = reader.read_frames(core_frames - future.frames());
@@ -291,9 +309,9 @@ sd::Result process_streamed_opus(
 		append_frames(window, history, 0, history.frames());
 		append_frames(window, core, 0, core.frames());
 		append_frames(window, future, 0, future.frames());
-		sd::Result result = sd::process(window, config);
 		const std::size_t left = history.frames();
 		const std::size_t right = left + core.frames();
+		sd::Result result = sd::process(window, config);
 		for (const auto& event : result.events) {
 			if (event.core_begin >= left && event.core_begin < right) {
 				sd::event shifted = event;
@@ -307,17 +325,21 @@ sd::Result process_streamed_opus(
 		}
 		total.clipped_seed_frames += result.clipped_seed_frames;
 		total.impulse_seed_frames += result.impulse_seed_frames;
-		lo::decoded_pcm output = format;
-		append_frames(output, window, left, right);
-		if (writer)
+		if (writer) {
+			lo::decoded_pcm output = format;
+			append_frames(output, window, left, right);
 			writer->write_frames(output);
+		}
 		output_frames += core.frames();
-		history = core;
+		++completed_chunks;
+		show_progress();
+		history = std::move(core);
 		if (history.frames() > overlap_frames) {
 			history.samples.erase(history.samples.begin(),
 								  history.samples.end() - overlap_frames * history.channels);
 		}
 	}
+	std::cout << "\n";
 	if (writer)
 		writer->finish();
 	processed_frames = output_frames;
@@ -365,7 +387,9 @@ int main(
 				  << "repair mode: " << sd::to_string(config.repair_mode) << '\n';
 		if (streamed_opus) {
 			std::cout << "Opus mode: streamed (" << options.chunk_seconds
-					  << " s core, 500 ms overlap)\n";
+					  << " s core, 500 ms overlap, "
+					  << (options.threads == 0 ? "automatic" : std::to_string(options.threads))
+					  << " worker(s))\n";
 		}
 
 		std::vector<std::size_t> per_channel(audio.channels, 0);

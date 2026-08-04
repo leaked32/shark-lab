@@ -83,23 +83,24 @@ void write_opus(const std::filesystem::path& path, const decoded_pcm& audio);
 // Sequential Opus I/O.  These keep only the caller's current block in memory.
 class opus_reader
 {
-public:
+  public:
 	explicit opus_reader(const std::filesystem::path& path);
 	~opus_reader();
 	opus_reader(const opus_reader&) = delete;
 	opus_reader& operator=(const opus_reader&) = delete;
 
 	[[nodiscard]] const decoded_pcm& format() const;
+	[[nodiscard]] std::size_t total_frames() const;
 	[[nodiscard]] decoded_pcm read_frames(std::size_t maximum_frames);
 
-private:
+  private:
 	struct state;
 	std::unique_ptr<state> state_;
 };
 
 class opus_writer
 {
-public:
+  public:
 	opus_writer(const std::filesystem::path& path, const decoded_pcm& format);
 	~opus_writer();
 	opus_writer(const opus_writer&) = delete;
@@ -108,7 +109,7 @@ public:
 	void write_frames(const decoded_pcm& audio);
 	void finish();
 
-private:
+  private:
 	struct state;
 	std::unique_ptr<state> state_;
 };
@@ -119,7 +120,7 @@ void write_audio(const std::filesystem::path& path, const decoded_pcm& audio);
 // declicker specialized for ambient sounds.
 namespace declick
 {
-	
+
 struct lpc_options
 {
 	std::size_t order = 32;
@@ -131,13 +132,13 @@ struct lpc_options
 
 // Returns replacements for signal[begin, end), aligned left-to-right.
 std::vector<double> reconstruct_gap_cubic(const std::vector<double>& signal, std::size_t begin,
-											std::size_t end);
+										  std::size_t end);
 
 std::vector<double> reconstruct_gap_lpc(const std::vector<double>& signal, std::size_t begin,
 										std::size_t end, const lpc_options& config);
 
 std::vector<double> reconstruct_gap_hybrid(const std::vector<double>& signal, std::size_t begin,
-											std::size_t end, const lpc_options& config);
+										   std::size_t end, const lpc_options& config);
 
 enum class repair_mode {
 	cubic,
@@ -187,6 +188,7 @@ struct options
 	double reflection_limit = 0.985;
 	double prediction_limit_factor = 4.0;
 	double lpc_mix = 0.25;
+	std::size_t worker_threads = 0;
 };
 
 struct Result

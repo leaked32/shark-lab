@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <jpeglib.h>
 #include <limits>
 #include <numeric>
@@ -13,6 +14,7 @@
 #include <png.h>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -569,7 +571,8 @@ struct shark::media::opus_reader::state
 	decoded_pcm format;
 };
 
-shark::media::opus_reader::opus_reader(const std::filesystem::path& path) : state_(std::make_unique<state>())
+shark::media::opus_reader::opus_reader(
+	const std::filesystem::path& path) : state_(std::make_unique<state>())
 {
 	int error = 0;
 	state_->file = op_open_file(path.c_str(), &error);
@@ -601,15 +604,24 @@ const shark::media::decoded_pcm& shark::media::opus_reader::format() const
 	return state_->format;
 }
 
-shark::media::decoded_pcm shark::media::opus_reader::read_frames(std::size_t maximum_frames)
+std::size_t shark::media::opus_reader::total_frames() const
+{
+	const opus_int64 frames = op_pcm_total(state_->file, -1);
+	return frames > 0 ? static_cast<std::size_t>(frames) : 0;
+}
+
+shark::media::decoded_pcm shark::media::opus_reader::read_frames(
+	std::size_t maximum_frames)
 {
 	if (maximum_frames == 0) {
 		return state_->format;
 	}
 	decoded_pcm result = state_->format;
 	std::vector<float> buffer(maximum_frames * result.channels);
-	const int frames = op_read_float(state_->file, buffer.data(),
-		static_cast<int>(std::min<std::size_t>(buffer.size(), std::numeric_limits<int>::max())), nullptr);
+	const int frames = op_read_float(
+		state_->file, buffer.data(),
+		static_cast<int>(std::min<std::size_t>(buffer.size(), std::numeric_limits<int>::max())),
+		nullptr);
 	if (frames < 0) {
 		throw std::runtime_error("failed while decoding opus");
 	}
@@ -629,15 +641,16 @@ struct shark::media::opus_writer::state
 	bool finished = false;
 };
 
-shark::media::opus_writer::opus_writer(const std::filesystem::path& path, const decoded_pcm& format)
-	: state_(std::make_unique<state>())
+shark::media::opus_writer::opus_writer(
+	const std::filesystem::path& path, const decoded_pcm& format) :
+	state_(std::make_unique<state>())
 {
 	if (format.sample_rate == 0 || format.channels == 0) {
 		throw std::runtime_error("cannot create Opus writer without an audio format");
 	}
 	state_->comments = ope_comments_create();
 	state_->encoder = ope_encoder_create_file(path.c_str(), state_->comments, format.sample_rate,
-		format.channels, 0, nullptr);
+											  format.channels, 0, nullptr);
 	if (!state_->encoder) {
 		ope_comments_destroy(state_->comments);
 		state_->comments = nullptr;
@@ -660,9 +673,12 @@ shark::media::opus_writer::~opus_writer()
 	}
 }
 
-void shark::media::opus_writer::write_frames(const decoded_pcm& audio)
+void shark::media::opus_writer::write_frames(
+	const decoded_pcm& audio)
 {
-	if (state_->finished || audio.sample_rate != state_->sample_rate || audio.channels != state_->channels) {
+	if (state_->finished || audio.sample_rate != state_->sample_rate ||
+		audio.channels != state_->channels)
+	{
 		throw std::runtime_error("Opus block format does not match writer format");
 	}
 	const std::size_t frames = audio.frames();
@@ -670,7 +686,8 @@ void shark::media::opus_writer::write_frames(const decoded_pcm& audio)
 	for (std::size_t i = 0; i < buffer.size(); ++i) {
 		buffer[i] = static_cast<float>(audio.samples[i]);
 	}
-	if (ope_encoder_write_float(state_->encoder, buffer.data(), static_cast<int>(frames)) != OPE_OK) {
+	if (ope_encoder_write_float(state_->encoder, buffer.data(), static_cast<int>(frames)) != OPE_OK)
+	{
 		throw std::runtime_error("failed while writing opus");
 	}
 }
@@ -1277,14 +1294,22 @@ shark::media::declick::Result shark::media::declick::process(
 
 	Result result;
 	const std::size_t frame_count = audio.frames();
-	for (std::uint16_t channel = 0; channel < audio.channels; ++channel) {
+	struct channel_result
+	{
+		std::vector<event> events;
+		std::size_t clipped = 0;
+		std::size_t impulse = 0;
+	};
+	auto process_channel = [&](std::uint16_t channel)
+	{
+		channel_result output;
 		std::vector<double> signal(frame_count, 0.0);
 		for (std::size_t frame = 0; frame < frame_count; ++frame) {
 			signal[frame] = audio.sample(frame, channel);
 		}
 
-		auto candidates = detect_channel(signal, audio.sample_rate, config,
-										 result.clipped_seed_frames, result.impulse_seed_frames);
+		auto candidates =
+			detect_channel(signal, audio.sample_rate, config, output.clipped, output.impulse);
 
 		lpc_options lpc;
 		lpc.order = config.lpc_order;
@@ -1345,11 +1370,29 @@ shark::media::declick::Result shark::media::declick::process(
 			e.score = candidate.score;
 			e.original_peak = original_peak;
 			e.repaired_peak = peak_in_range(signal, candidate.repair_begin, candidate.repair_end);
-			result.events.push_back(e);
+			output.events.push_back(e);
 		}
 
 		for (std::size_t frame = 0; frame < frame_count; ++frame) {
 			audio.sample(frame, channel) = signal[frame];
+		}
+		return output;
+	};
+	const std::size_t workers = config.worker_threads == 0
+		? std::max<std::size_t>(1, std::thread::hardware_concurrency())
+		: config.worker_threads;
+	std::vector<std::future<channel_result>> pending;
+	for (std::uint16_t channel = 0; channel < audio.channels; ++channel) {
+		pending.push_back(std::async(std::launch::async, process_channel, channel));
+		if (pending.size() == workers || channel + 1 == audio.channels) {
+			for (auto& task : pending) {
+				auto output = task.get();
+				result.clipped_seed_frames += output.clipped;
+				result.impulse_seed_frames += output.impulse;
+				result.events.insert(result.events.end(), output.events.begin(),
+									 output.events.end());
+			}
+			pending.clear();
 		}
 	}
 
