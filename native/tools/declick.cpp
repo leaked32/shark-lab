@@ -1,5 +1,7 @@
 #include "shark/media.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -22,6 +24,7 @@ struct options
 	std::filesystem::path output;
 	std::filesystem::path report;
 	bool dry_run = false;
+	double chunk_seconds = 120.0;
 	std::vector<std::pair<std::string, std::string>> overrides;
 };
 
@@ -50,6 +53,7 @@ void usage(
 		"  --lpc-context-ms X         context used on each side\n"
 		"  --lpc-mix X                LPC share in hybrid mode, 0..1\n"
 		"  --report FILE.csv          write detected-event diagnostics\n"
+		"  --chunk-seconds X          Opus core block duration, default 120\n"
 		"  --dry-run                  detect/report without writing output\n"
 		"  -h, --help                 show this message\n";
 	out << use;
@@ -102,6 +106,9 @@ options parse_options(
 			}
 			else if (arg == "--report") {
 				options.report = value;
+			}
+			else if (arg == "--chunk-seconds") {
+				options.chunk_seconds = parse_double(arg, value);
 			}
 			else {
 				options.overrides.emplace_back(arg, value);
@@ -210,6 +217,119 @@ void write_report(
 	}
 }
 
+bool is_opus(
+	const std::filesystem::path& path)
+{
+	std::string extension = path.extension().string();
+	std::transform(extension.begin(), extension.end(), extension.begin(),
+				   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return extension == ".opus";
+}
+
+void append_frames(
+	lo::decoded_pcm& destination, const lo::decoded_pcm& source, std::size_t begin, std::size_t end)
+{
+	if (begin > end || end > source.frames() || destination.sample_rate != source.sample_rate ||
+		destination.channels != source.channels)
+	{
+		throw std::runtime_error("incompatible streamed audio block");
+	}
+	const std::size_t first = begin * source.channels;
+	const std::size_t last = end * source.channels;
+	destination.samples.insert(destination.samples.end(), source.samples.begin() + first,
+							   source.samples.begin() + last);
+}
+
+lo::decoded_pcm take_frames(
+	lo::decoded_pcm& source, std::size_t count)
+{
+	const std::size_t frames = std::min(count, source.frames());
+	lo::decoded_pcm result = source;
+	result.samples.clear();
+	append_frames(result, source, 0, frames);
+	source.samples.erase(source.samples.begin(), source.samples.begin() + frames * source.channels);
+	return result;
+}
+
+sd::Result process_streamed_opus(
+	const options& options, const sd::options& config, lo::decoded_pcm& format,
+	std::size_t& processed_frames)
+{
+	lo::opus_reader reader(options.input);
+	format = reader.format();
+	const std::size_t core_frames = std::max<std::size_t>(
+		1, static_cast<std::size_t>(options.chunk_seconds * format.sample_rate));
+	// / 4: 250ms, / 2: 500ms
+	const std::size_t overlap_frames = std::max<std::size_t>(1, format.sample_rate / 2);
+	lo::decoded_pcm history = format;
+	lo::decoded_pcm future = format;
+	std::optional<lo::opus_writer> writer;
+	if (!options.dry_run) {
+		writer.emplace(options.output, format);
+	}
+
+	sd::Result total;
+	std::size_t output_frames = 0;
+	while (true) {
+		while (future.frames() < core_frames) {
+			lo::decoded_pcm block = reader.read_frames(core_frames - future.frames());
+			if (block.samples.empty())
+				break;
+			append_frames(future, block, 0, block.frames());
+		}
+		if (future.samples.empty())
+			break;
+		lo::decoded_pcm core = take_frames(future, core_frames);
+		while (future.frames() < overlap_frames) {
+			lo::decoded_pcm block = reader.read_frames(overlap_frames - future.frames());
+			if (block.samples.empty())
+				break;
+			append_frames(future, block, 0, block.frames());
+		}
+
+		lo::decoded_pcm window = format;
+		append_frames(window, history, 0, history.frames());
+		append_frames(window, core, 0, core.frames());
+		append_frames(window, future, 0, future.frames());
+		sd::Result result = sd::process(window, config);
+		const std::size_t left = history.frames();
+		const std::size_t right = left + core.frames();
+		for (const auto& event : result.events) {
+			if (event.core_begin >= left && event.core_begin < right) {
+				sd::event shifted = event;
+				const std::size_t offset = output_frames - left;
+				shifted.core_begin += offset;
+				shifted.core_end += offset;
+				shifted.repair_begin += offset;
+				shifted.repair_end += offset;
+				total.events.push_back(shifted);
+			}
+		}
+		total.clipped_seed_frames += result.clipped_seed_frames;
+		total.impulse_seed_frames += result.impulse_seed_frames;
+		lo::decoded_pcm output = format;
+		append_frames(output, window, left, right);
+		if (writer)
+			writer->write_frames(output);
+		output_frames += core.frames();
+		history = core;
+		if (history.frames() > overlap_frames) {
+			history.samples.erase(history.samples.begin(),
+								  history.samples.end() - overlap_frames * history.channels);
+		}
+	}
+	if (writer)
+		writer->finish();
+	processed_frames = output_frames;
+	std::sort(total.events.begin(), total.events.end(),
+			  [](const sd::event& a, const sd::event& b)
+			  {
+				  return a.repair_begin != b.repair_begin ? a.repair_begin < b.repair_begin
+														  : a.channel < b.channel;
+			  });
+	return total;
+}
+
 } // namespace
 
 int main(
@@ -220,17 +340,34 @@ int main(
 		sd::options config = sd::preset_config(options.preset);
 		apply_overrides(config, options);
 		validate(config);
+		if (!(options.chunk_seconds > 0.0)) {
+			throw std::invalid_argument("chunk seconds must be positive");
+		}
 
-		lo::decoded_pcm audio = lo::read_audio(options.input);
+		lo::decoded_pcm audio;
+		sd::Result result;
+		std::size_t frame_count = 0;
+		const bool streamed_opus = is_opus(options.input);
+		if (streamed_opus) {
+			result = process_streamed_opus(options, config, audio, frame_count);
+		}
+		else {
+			audio = lo::read_audio(options.input);
+			result = sd::process(audio, config);
+			frame_count = audio.frames();
+		}
 		std::cout << "input: " << options.input << '\n'
 				  << "format: " << audio.sample_rate << " Hz, " << audio.channels << " channel(s), "
 				  << audio.bits_per_sample << "-bit "
 				  << (audio.encoding == lo::sample_encoding::pcm_integer ? "PCM" : "float") << '\n'
-				  << "frames: " << audio.frames() << '\n'
+				  << "frames: " << frame_count << '\n'
 				  << "preset: " << options.preset << '\n'
 				  << "repair mode: " << sd::to_string(config.repair_mode) << '\n';
+		if (streamed_opus) {
+			std::cout << "Opus mode: streamed (" << options.chunk_seconds
+					  << " s core, 500 ms overlap)\n";
+		}
 
-		const sd::Result result = sd::process(audio, config);
 		std::vector<std::size_t> per_channel(audio.channels, 0);
 		for (const auto& event : result.events) {
 			++per_channel[event.channel];
@@ -247,7 +384,7 @@ int main(
 			write_report(options.report, audio, result);
 			std::cout << "report: " << options.report << '\n';
 		}
-		if (!options.dry_run) {
+		if (!options.dry_run && !streamed_opus) {
 			lo::write_audio(options.output, audio);
 			std::cout << "output: " << options.output << '\n';
 		}

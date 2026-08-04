@@ -543,65 +543,146 @@ void shark::media::write_wav(
 shark::media::decoded_pcm shark::media::read_opus(
 	const std::filesystem::path& path)
 {
-	int error = 0;
-
-	OggOpusFile* file = op_open_file(path.c_str(), &error);
-
-	if (!file) {
-		throw std::runtime_error("cannot open opus");
-	}
-
-	const int channels = op_channel_count(file, -1);
-
-	const int rate = 48000; // Opus decoder output
-
-	decoded_pcm audio;
-	audio.sample_rate = rate;
-	audio.channels = channels;
-	audio.encoding = sample_encoding::ieee_float;
-
-	std::vector<float> buffer(4096 * channels);
-
+	opus_reader reader(path);
+	decoded_pcm audio = reader.format();
 	while (true) {
-		int samples = op_read_float(file, buffer.data(), buffer.size(), nullptr);
-
-		if (samples <= 0)
+		decoded_pcm block = reader.read_frames(4096);
+		if (block.samples.empty()) {
 			break;
-
-		for (int i = 0; i < samples * channels; i++) {
-			audio.samples.push_back(buffer[i]);
 		}
+		audio.samples.insert(audio.samples.end(), block.samples.begin(), block.samples.end());
 	}
-
-	op_free(file);
-
 	return audio;
 }
 
 void shark::media::write_opus(
 	const std::filesystem::path& path, const decoded_pcm& audio)
 {
-	OggOpusComments* comments = ope_comments_create();
+	opus_writer writer(path, audio);
+	writer.write_frames(audio);
+	writer.finish();
+}
 
-	OggOpusEnc* enc = ope_encoder_create_file(path.c_str(), comments, audio.sample_rate,
-											  audio.channels, 0, nullptr);
+struct shark::media::opus_reader::state
+{
+	OggOpusFile* file = nullptr;
+	decoded_pcm format;
+};
 
-	if (!enc) {
-		throw std::runtime_error("cannot create opus");
+shark::media::opus_reader::opus_reader(const std::filesystem::path& path) : state_(std::make_unique<state>())
+{
+	int error = 0;
+	state_->file = op_open_file(path.c_str(), &error);
+	if (!state_->file) {
+		throw std::runtime_error("cannot open opus: " + path.string());
 	}
+	const int channels = op_channel_count(state_->file, -1);
+	if (channels <= 0) {
+		op_free(state_->file);
+		state_->file = nullptr;
+		throw std::runtime_error("Opus stream has no audio channels");
+	}
+	state_->format.sample_rate = 48000;
+	state_->format.channels = static_cast<std::uint16_t>(channels);
+	state_->format.encoding = sample_encoding::ieee_float;
+	state_->format.bits_per_sample = 32;
+	state_->format.valid_bits_per_sample = 32;
+}
 
+shark::media::opus_reader::~opus_reader()
+{
+	if (state_ && state_->file) {
+		op_free(state_->file);
+	}
+}
+
+const shark::media::decoded_pcm& shark::media::opus_reader::format() const
+{
+	return state_->format;
+}
+
+shark::media::decoded_pcm shark::media::opus_reader::read_frames(std::size_t maximum_frames)
+{
+	if (maximum_frames == 0) {
+		return state_->format;
+	}
+	decoded_pcm result = state_->format;
+	std::vector<float> buffer(maximum_frames * result.channels);
+	const int frames = op_read_float(state_->file, buffer.data(),
+		static_cast<int>(std::min<std::size_t>(buffer.size(), std::numeric_limits<int>::max())), nullptr);
+	if (frames < 0) {
+		throw std::runtime_error("failed while decoding opus");
+	}
+	result.samples.reserve(static_cast<std::size_t>(frames) * result.channels);
+	for (int i = 0; i < frames * result.channels; ++i) {
+		result.samples.push_back(buffer[static_cast<std::size_t>(i)]);
+	}
+	return result;
+}
+
+struct shark::media::opus_writer::state
+{
+	OggOpusEnc* encoder = nullptr;
+	OggOpusComments* comments = nullptr;
+	std::uint32_t sample_rate = 0;
+	std::uint16_t channels = 0;
+	bool finished = false;
+};
+
+shark::media::opus_writer::opus_writer(const std::filesystem::path& path, const decoded_pcm& format)
+	: state_(std::make_unique<state>())
+{
+	if (format.sample_rate == 0 || format.channels == 0) {
+		throw std::runtime_error("cannot create Opus writer without an audio format");
+	}
+	state_->comments = ope_comments_create();
+	state_->encoder = ope_encoder_create_file(path.c_str(), state_->comments, format.sample_rate,
+		format.channels, 0, nullptr);
+	if (!state_->encoder) {
+		ope_comments_destroy(state_->comments);
+		state_->comments = nullptr;
+		throw std::runtime_error("cannot create opus: " + path.string());
+	}
+	state_->sample_rate = format.sample_rate;
+	state_->channels = format.channels;
+}
+
+shark::media::opus_writer::~opus_writer()
+{
+	if (state_ && state_->encoder) {
+		if (!state_->finished) {
+			ope_encoder_drain(state_->encoder);
+		}
+		ope_encoder_destroy(state_->encoder);
+	}
+	if (state_ && state_->comments) {
+		ope_comments_destroy(state_->comments);
+	}
+}
+
+void shark::media::opus_writer::write_frames(const decoded_pcm& audio)
+{
+	if (state_->finished || audio.sample_rate != state_->sample_rate || audio.channels != state_->channels) {
+		throw std::runtime_error("Opus block format does not match writer format");
+	}
+	const std::size_t frames = audio.frames();
 	std::vector<float> buffer(audio.samples.size());
-
-	for (size_t i = 0; i < audio.samples.size(); i++) {
+	for (std::size_t i = 0; i < buffer.size(); ++i) {
 		buffer[i] = static_cast<float>(audio.samples[i]);
 	}
+	if (ope_encoder_write_float(state_->encoder, buffer.data(), static_cast<int>(frames)) != OPE_OK) {
+		throw std::runtime_error("failed while writing opus");
+	}
+}
 
-	ope_encoder_write_float(enc, buffer.data(), audio.frames());
-
-	ope_encoder_drain(enc);
-	ope_encoder_destroy(enc);
-
-	ope_comments_destroy(comments);
+void shark::media::opus_writer::finish()
+{
+	if (!state_->finished) {
+		if (ope_encoder_drain(state_->encoder) != OPE_OK) {
+			throw std::runtime_error("failed while finalizing opus");
+		}
+		state_->finished = true;
+	}
 }
 
 shark::media::decoded_pcm shark::media::read_audio(

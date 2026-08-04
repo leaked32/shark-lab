@@ -15,6 +15,7 @@
 
 #include <GL/gl.h>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -78,6 +79,39 @@ void write_wav(const std::filesystem::path& path, const decoded_pcm& audio);
 // sudo apt install libopusenc-dev
 decoded_pcm read_opus(const std::filesystem::path& path);
 void write_opus(const std::filesystem::path& path, const decoded_pcm& audio);
+
+// Sequential Opus I/O.  These keep only the caller's current block in memory.
+class opus_reader
+{
+public:
+	explicit opus_reader(const std::filesystem::path& path);
+	~opus_reader();
+	opus_reader(const opus_reader&) = delete;
+	opus_reader& operator=(const opus_reader&) = delete;
+
+	[[nodiscard]] const decoded_pcm& format() const;
+	[[nodiscard]] decoded_pcm read_frames(std::size_t maximum_frames);
+
+private:
+	struct state;
+	std::unique_ptr<state> state_;
+};
+
+class opus_writer
+{
+public:
+	opus_writer(const std::filesystem::path& path, const decoded_pcm& format);
+	~opus_writer();
+	opus_writer(const opus_writer&) = delete;
+	opus_writer& operator=(const opus_writer&) = delete;
+
+	void write_frames(const decoded_pcm& audio);
+	void finish();
+
+private:
+	struct state;
+	std::unique_ptr<state> state_;
+};
 
 decoded_pcm read_audio(const std::filesystem::path& path);
 void write_audio(const std::filesystem::path& path, const decoded_pcm& audio);
