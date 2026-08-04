@@ -41,4 +41,4 @@ add_subdirectory("hip-test")
 # Applications
 
 add_subdirectory("chatty")
-add_subdirectory("tools")
+# add_subdirectory("tools")
